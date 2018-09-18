@@ -39,13 +39,19 @@
     <ClInclude Include="src\skip_gram.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\strick_breaking.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="src\textutil.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\util.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\VectorModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\mathUtils.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\stick_breaking.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

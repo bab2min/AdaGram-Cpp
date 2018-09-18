@@ -6,9 +6,10 @@ struct HierarchicalSoftmaxNode
 	int32_t parent = 0;
 	bool branch = false;
 
-	static vector<pair<int32_t, float>> softmax_path(const vector<HierarchicalSoftmaxNode>& nodes, int V, int id)
+	static std::vector<std::pair<int32_t, float>> softmax_path(
+		const std::vector<HierarchicalSoftmaxNode>& nodes, int V, int id)
 	{
-		vector<pair<int32_t, float>> ret;
+		std::vector<std::pair<int32_t, float>> ret;
 		while (1)
 		{
 			auto& node = nodes[id];
@@ -23,8 +24,8 @@ struct HierarchicalSoftmaxNode
 
 struct HierarchicalOuput
 {
-	vector<int8_t> code;
-	vector<int> path;
+	std::vector<int8_t> code;
+	std::vector<int> path;
 
 	size_t length() const
 	{
@@ -34,10 +35,10 @@ struct HierarchicalOuput
 
 
 template<class Tf>
-auto build_huffman_tree(const vector<Tf>& freqs)
+auto build_huffman_tree(const std::vector<Tf>& freqs)
 {
 	auto V = freqs.size();
-	auto nodes = vector<HierarchicalSoftmaxNode>(V);
+	auto nodes = std::vector<HierarchicalSoftmaxNode>(V);
 	/*
 	freq_ord = By(wf -> wf[2])
 	heap = heapify!([(nodes[v], freqs[v]) for v in 1:V], freq_ord)
@@ -66,13 +67,13 @@ auto build_huffman_tree(const vector<Tf>& freqs)
 	return nodes;
 }
 
-auto convert_huffman_tree(const vector<HierarchicalSoftmaxNode>& nodes, int V)
+auto convert_huffman_tree(const std::vector<HierarchicalSoftmaxNode>& nodes, int V)
 {
-	auto outputs = vector<HierarchicalOuput>(V);
+	auto outputs = std::vector<HierarchicalOuput>(V);
 	for (auto v = 0; v < V; ++v)
 	{
-		vector<int8_t> code;
-		vector<int> path;
+		std::vector<int8_t> code;
+		std::vector<int> path;
 		for (auto& p : HierarchicalSoftmaxNode::softmax_path(nodes, V, v))
 		{
 			code.emplace_back(int8_t(p.second + 0.5f));

@@ -21,15 +21,17 @@
   <ItemGroup>
     <ClInclude Include="src\gradient.h" />
     <ClInclude Include="src\kahan.h" />
+    <ClInclude Include="src\mathUtils.h" />
     <ClInclude Include="src\mdvector.h" />
     <ClInclude Include="src\predict.h" />
     <ClInclude Include="src\skip_gram.h" />
     <ClInclude Include="src\softmax.h" />
     <ClInclude Include="src\stdafx.h" />
-    <ClInclude Include="src\strick_breaking.h" />
+    <ClInclude Include="src\stick_breaking.h" />
     <ClInclude Include="src\targetver.h" />
     <ClInclude Include="src\textutil.h" />
     <ClInclude Include="src\util.h" />
+    <ClInclude Include="src\VectorModel.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\AdaGram.cpp" />

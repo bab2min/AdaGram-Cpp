@@ -3,14 +3,14 @@
 #include "mathUtils.h"
 #include "VectorModel.h"
 
-float skip_gram(float* In, float* Out,
+float skip_gram(const float* In, const float* Out,
 	int64_t M,
-	int32_t* path, int8_t* code, int length) {
+	const int32_t* path, const int8_t* code, int length) {
 
 	float pr = 0;
 
 	for (int n = 0; n < length && code[n] != -1; ++n) {
-		float* out = Out + (path[n] - 1)*M;
+		const float* out = Out + path[n] * M;
 
 		float f = 0;
 		for (int i = 0; i < M; ++i)

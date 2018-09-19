@@ -14,7 +14,8 @@ inline float logsigmoid(float x)
 
 inline float digamma(float x)
 {
-
+	if(x < 100) return log(x + 2) - 0.5 / (x + 2) - 1 / 12.0 / pow(x + 2, 2) - 1 / (x + 1) - 1 / x;
+	return log(x) - 0.5 / x - 1 / 12.0 / pow(x, 2);
 }
 
 inline float mean_beta(float a, float b)

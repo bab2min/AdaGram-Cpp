@@ -1,11 +1,13 @@
 #pragma once
 
+#include <random>
 #include "mdvector.h"
 #include "softmax.h"
 
+
 struct VectorModel
 {
-	std::vector<int64_t> frequencies;
+	std::vector<size_t> frequencies;
 	mdvector<int8_t, 2> code;
 	mdvector<int32_t, 2> path;
 	mdvector<float, 3> in;
@@ -14,17 +16,19 @@ struct VectorModel
 	float d;
 	mdvector<float, 2> counts;
 
-	VectorModel(int64_t max_length, int64_t V, int64_t M, int64_t T = 1,
-		float alpha = 1e-2, float d = 0)
+	VectorModel(size_t max_length, size_t V, size_t M, size_t T = 1,
+		float _alpha = 1e-2, float _d = 0)
 		: path({ max_length, V }), code({ max_length, V }),
-		in({ M, T, V }), out({ M, V }), counts({ T, V }), frequencies(V)
+		in({ M, T, V }), out({ M, V }), counts({ T, V }), frequencies(V),
+		alpha(_alpha), d(_d)
 	{
-		fill(code.begin(), code.end(), -1);
+		std::fill(code.begin(), code.end(), -1);
 	}
 
-	VectorModel(const std::vector<int64_t>& _freqs, int64_t M, int64_t T = 1,
-		float alpha = 1e-2, float d = 0)
-		: in({ M, T, _freqs.size() }), out({ M, _freqs.size() }), counts({ T, _freqs.size() }), frequencies(_freqs)
+	VectorModel(const std::vector<size_t>& _freqs, size_t M, size_t T = 1,
+		float _alpha = 1e-2, float _d = 0)
+		: in({ M, T, _freqs.size() }), out({ M, _freqs.size() }), counts({ T, _freqs.size() }), frequencies(_freqs),
+		alpha(_alpha), d(_d)
 	{
 		auto V = _freqs.size();
 		auto nodes = build_huffman_tree(_freqs);
@@ -34,12 +38,16 @@ struct VectorModel
 			return a.code.size() < b.code.size();
 		})->code.size();
 
+		std::mt19937_64 rg;
+		for (auto& r : in) r = std::generate_canonical<float, 24>(rg);
+		for (auto& r : out) r = std::generate_canonical<float, 24>(rg);
+
 		path.resize({ max_length, V });
 		code.resize({ max_length, V });
 
 		for (size_t v = 0; v < V; ++v)
 		{
-			fill(&code[{0, v}], &code[{max_length, v}], -1);
+			std::fill(&code[{0, v}], &code[{0, v}] + max_length, -1);
 			for (size_t i = 0; i < outputs[v].length(); ++i)
 			{
 				code[{i, v}] = outputs[v].code[i];

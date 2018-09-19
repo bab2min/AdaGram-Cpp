@@ -15,9 +15,6 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="src\stdafx.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="src\targetver.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -54,11 +51,11 @@
     <ClInclude Include="src\stick_breaking.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\dictionary.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\stdafx.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="src\AdaGram.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

@@ -1,9 +1,10 @@
 #pragma once
 
+#include <cassert>
 
 struct HierarchicalSoftmaxNode
 {
-	int32_t parent = 0;
+	int32_t parent = -1;
 	bool branch = false;
 
 	static std::vector<std::pair<int32_t, float>> softmax_path(
@@ -13,8 +14,8 @@ struct HierarchicalSoftmaxNode
 		while (1)
 		{
 			auto& node = nodes[id];
-			if (node.parent == 0) break;
-			assert(node.parent > V);
+			if (node.parent == -1) break;
+			assert(node.parent >= V);
 			ret.emplace_back(node.parent - V, node.branch);
 			id = node.parent;
 		}
@@ -34,11 +35,48 @@ struct HierarchicalOuput
 };
 
 
-template<class Tf>
-auto build_huffman_tree(const std::vector<Tf>& freqs)
+auto build_huffman_tree(const std::vector<size_t>& freqs)
 {
 	auto V = freqs.size();
 	auto nodes = std::vector<HierarchicalSoftmaxNode>(V);
+	std::vector<std::pair<size_t, size_t>> heap;
+
+	for (size_t i = 0; i < V; ++i)
+	{
+		heap.emplace_back(i, freqs[i]);
+	}
+	size_t heapSize = V;
+
+	const auto& freq_cmp = [](const std::pair<size_t, size_t>& a, const std::pair<size_t, size_t>& b)
+	{
+		return a.second > b.second;
+	};
+	std::make_heap(heap.begin(), heap.end(), freq_cmp);
+
+	size_t L = V;
+	while (heapSize > 1)
+	{
+		nodes.emplace_back();
+		size_t freq = 0;
+
+		std::pop_heap(heap.begin(), heap.begin() + heapSize, freq_cmp);
+		heapSize--;
+		nodes[heap[heapSize].first].parent = L;
+		nodes[heap[heapSize].first].branch = true;
+		freq += heap[heapSize].second;
+
+		std::pop_heap(heap.begin(), heap.begin() + heapSize, freq_cmp);
+		heapSize--;
+		nodes[heap[heapSize].first].parent = L;
+		nodes[heap[heapSize].first].branch = false;
+		freq += heap[heapSize].second;
+
+		heap[heapSize] = { nodes.size() - 1, freq };
+		heapSize++;
+		std::push_heap(heap.begin(), heap.begin() + heapSize, freq_cmp);
+		L++;
+	}
+
 	/*
 	freq_ord = By(wf -> wf[2])
 	heap = heapify!([(nodes[v], freqs[v]) for v in 1:V], freq_ord)

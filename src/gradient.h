@@ -127,13 +127,16 @@ void inplace_train_vectors(VectorModel& vm, const std::vector<size_t>& doc,
 	std::vector<double> z(vm.T());
 	float senses = 0.f, max_senses = 0.f;
 
+	std::uniform_int_distribution<> uid{ 0, window_length - 1 };
+	std::mt19937_64 rg;
+
 	for (size_t i = 0; i < N; ++i)
 	{
 		const auto& x = doc[i];
 		float lr1 = std::max(start_lr * (1 - words_read[0] / (total_words + 1)), start_lr * 1e-4f);
 		float lr2 = lr1;
 
-		int random_reduce = /*context_cut ? (rand() % (window_length - 2) + 1) :*/ 0;
+		int random_reduce = context_cut ? uid(rg) : 0;
 		int window = window_length - random_reduce;
 		std::fill(z.begin(), z.end(), 0.f);
 

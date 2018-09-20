@@ -108,7 +108,7 @@ auto var_update_z(const VectorModel& vm, size_t x, size_t y,
 		&vm.path[{0, y}], &vm.code[{0, y}], vm.path.size()[0]);
 }
 
-auto var_update_counts(VectorModel& vm, size_t x, std::vector<double>& local_counts, double lr)
+auto var_update_counts(VectorModel& vm, size_t x, const std::vector<double>& local_counts, double lr)
 {
 	for (size_t k = 0; k < vm.T(); ++k)
 	{
@@ -116,12 +116,11 @@ auto var_update_counts(VectorModel& vm, size_t x, std::vector<double>& local_cou
 	}
 }
 
-void inplace_train_vectors(VectorModel& vm, const std::vector<size_t>& doc,
+void inplace_train_vectors(VectorModel& vm, const size_t* doc, size_t N,
 	int window_length, float start_lr, float total_words,
 	std::vector<int64_t>& words_read, std::vector<float>& total_ll,
-	int batch = 10000, bool context_cut = true, float sense_threshold = 1e-32)
+	int batch = 10000, bool context_cut = true, float sense_threshold = 1e-10)
 {
-	const size_t N = doc.size();
 	mdvector<float, 2> in_grad{ {vm.M(), vm.T()} };
 	std::vector<float> out_grad(vm.M());
 	std::vector<double> z(vm.T());
@@ -174,7 +173,7 @@ void inplace_train_vectors(VectorModel& vm, const std::vector<size_t>& doc,
 		// variational update for q(pi_v)
 		var_update_counts(vm, x, z, lr2);
 
-		if (i % 1000 == 0)
+		if ((i + 1) % 10000 == 0)
 		{
 			float time_per_kword = batch / 1000.f;
 			printf("%.2f%% %.4f %.4f %.4f %.2f/%.2f %.2f kwords/sec\n", 

@@ -39,8 +39,9 @@ struct VectorModel
 		})->code.size();
 
 		std::mt19937_64 rg;
-		for (auto& r : in) r = std::generate_canonical<float, 24>(rg);
-		for (auto& r : out) r = std::generate_canonical<float, 24>(rg);
+		std::uniform_real_distribution<float> urd{-.5f / M, .5f / M};
+		for (auto& r : in) r = urd(rg);
+		for (auto& r : out) r = urd(rg);
 
 		path.resize({ max_length, V });
 		code.resize({ max_length, V });

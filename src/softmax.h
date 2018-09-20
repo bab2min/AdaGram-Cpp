@@ -76,32 +76,6 @@ auto build_huffman_tree(const std::vector<size_t>& freqs)
 		std::push_heap(heap.begin(), heap.begin() + heapSize, freq_cmp);
 		L++;
 	}
-
-	/*
-	freq_ord = By(wf -> wf[2])
-	heap = heapify!([(nodes[v], freqs[v]) for v in 1:V], freq_ord)
-
-	function pop_initialize!(parent::Int, branch::Bool)
-		node = heappop!(heap, freq_ord)
-		node[1].parent = Int32(parent)
-		node[1].branch = branch
-		return node[2]
-	end
-
-	L = V
-	while length(heap) > 1
-		L += 1
-		node = HierarchicalSoftmaxNode()
-		push!(nodes, node)
-
-		freq = 1
-		freq = pop_initialize!(L, true) + pop_initialize!(L, false)
-		heappush!(heap, (node, freq), freq_ord)
-	end
-
-	@assert length(heap) == 1
-
-	*/
 	return nodes;
 }
 

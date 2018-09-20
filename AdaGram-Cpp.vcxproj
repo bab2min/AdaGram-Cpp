@@ -32,6 +32,7 @@
     <ClInclude Include="src\stick_breaking.h" />
     <ClInclude Include="src\targetver.h" />
     <ClInclude Include="src\textutil.h" />
+    <ClInclude Include="src\Timer.h" />
     <ClInclude Include="src\util.h" />
     <ClInclude Include="src\VectorModel.h" />
   </ItemGroup>

@@ -3,6 +3,7 @@
 #include "VectorModel.h"
 #include "mathUtils.h"
 #include "stick_breaking.h"
+#include "Timer.h"
 
 
 #define in_offset(In, x, k, M, T) (In) + (x)*(M)*(T) + (k)*(M)
@@ -129,6 +130,7 @@ void inplace_train_vectors(VectorModel& vm, const size_t* doc, size_t N,
 	std::uniform_int_distribution<> uid{ 0, window_length - 1 };
 	std::mt19937_64 rg;
 
+	Timer timer;
 	for (size_t i = 0; i < N; ++i)
 	{
 		const auto& x = doc[i];
@@ -175,10 +177,11 @@ void inplace_train_vectors(VectorModel& vm, const size_t* doc, size_t N,
 
 		if ((i + 1) % 10000 == 0)
 		{
-			float time_per_kword = batch / 1000.f;
+			float time_per_kword = batch / timer.getElapsed() / 1000.f;
 			printf("%.2f%% %.4f %.4f %.4f %.2f/%.2f %.2f kwords/sec\n", 
 				words_read[0] / (total_words / 100.f), total_ll[0], lr1, lr2, 
 				(float)senses / (i + 1), max_senses, time_per_kword);
+			timer.reset();
 		}
 
 		if (words_read[0] > total_words) break;

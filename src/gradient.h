@@ -29,7 +29,7 @@ static float inplace_update(float* In, float* Out,
 
 		for (int i = 0; i < M; ++i)
 			out_grad[i] = 0;
-
+		
 		for (int k = 0; k < T; ++k) {
 			if (z[k] < sense_treshold) continue;
 

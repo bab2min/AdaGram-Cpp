@@ -19,6 +19,7 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\AdaGramModel.h" />
     <ClInclude Include="src\dictionary.h" />
     <ClInclude Include="src\gamma.h" />
     <ClInclude Include="src\gradient.h" />
@@ -30,14 +31,14 @@
     <ClInclude Include="src\skip_gram.h" />
     <ClInclude Include="src\softmax.h" />
     <ClInclude Include="src\stick_breaking.h" />
-    <ClInclude Include="src\targetver.h" />
     <ClInclude Include="src\textutil.h" />
     <ClInclude Include="src\Timer.h" />
     <ClInclude Include="src\util.h" />
     <ClInclude Include="src\VectorModel.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\AdaGram.cpp" />
+    <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\AdaGramModel.cpp" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>15.0</VCProjectVersion>
@@ -93,15 +94,19 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <LinkIncremental>true</LinkIncremental>
+    <IncludePath>E:\eigen\;$(IncludePath)</IncludePath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LinkIncremental>true</LinkIncremental>
+    <IncludePath>E:\eigen\;$(IncludePath)</IncludePath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <LinkIncremental>false</LinkIncremental>
+    <IncludePath>E:\eigen\;$(IncludePath)</IncludePath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
+    <IncludePath>E:\eigen\;$(IncludePath)</IncludePath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>

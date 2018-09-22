@@ -31,19 +31,3 @@ inline float meanlog_mirror(float a, float b)
 {
 	return meanlog_beta(b, a);
 }
-
-template<class _Tf>
-void exp_normalize(std::vector<_Tf>& x)
-{
-	auto max_x = *std::max_element(x.begin(), x.end());
-	_Tf sum_x = 0;
-	for (auto& xi : x)
-	{
-		xi = exp(xi - max_x);
-		sum_x += xi;
-	}
-	for (auto& xi : x)
-	{
-		xi /= sum_x;
-	}
-}

@@ -261,3 +261,4 @@ __pycache__/
 *.pyc
 /data/enwiki3000.txt
 /data/enwiki10000.txt
+*.mdl

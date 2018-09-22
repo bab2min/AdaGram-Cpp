@@ -1,6 +1,7 @@
 #include "AdaGramModel.h"
 #include "mathUtils.h"
-
+#include "IOUtils.h"
+#include "ThreadPool.h"
 #include <numeric>
 
 using namespace std;
@@ -215,7 +216,7 @@ void exp_normalize(VectorXf& z)
 	z /= z.sum();
 }
 
-void AdaGramModel::trainVectors(const uint32_t * ws, size_t N, size_t window_length, float start_lr)
+void AdaGramModel::trainVectors(const uint32_t * ws, size_t N, size_t window_length, float start_lr, size_t threadId)
 {
 	size_t senses = 0, max_senses = 0;
 
@@ -229,6 +230,9 @@ void AdaGramModel::trainVectors(const uint32_t * ws, size_t N, size_t window_len
 
 		int random_reduce = context_cut ? uid(rg) : 0;
 		int window = window_length - random_reduce;
+
+		lock_guard<mutex> lock(mtx);
+
 		auto t = getExpectedLogPi(x);
 		VectorXf& z = t.first;
 		senses += t.second;
@@ -261,26 +265,59 @@ void AdaGramModel::trainVectors(const uint32_t * ws, size_t N, size_t window_len
 
 		procWords += 1;
 
-		if (procWords % 10000 == 0)
+		if (threadId == 0 && procWords % 10000 == 0)
 		{
-			float time_per_kword = 10000 / timer.getElapsed() / 1000.f;
+			float time_per_kword = (procWords - lastProcWords) / timer.getElapsed() / 1000.f;
 			printf("%.2f%% %.4f %.4f %.4f %.2f/%d %.2f kwords/sec\n",
 				procWords / (totalWords / 100.f), totalLL, lr1, lr2,
 				(float)senses / (i + 1), max_senses, time_per_kword);
+			lastProcWords = procWords;
 			timer.reset();
 		}
 	}
 }
 
 void AdaGramModel::train(const function<vector<string>(size_t, double&)>& reader, 
-	size_t window_length, float start_lr, size_t batch, size_t epoch)
+	size_t numWorkers, size_t window_length, float start_lr, size_t batch, size_t epoch)
 {
+	if (!numWorkers) numWorkers = thread::hardware_concurrency();
+	ThreadPool workers{ numWorkers };
 	vector<vector<uint32_t>> collections;
 	timer.reset();
-	procWords = 0;
+	totalLL = 0;
+	totalLLCnt = 0;
+	procWords = lastProcWords = 0;
 	// estimate total size
 	totalWords = epoch * accumulate(frequencies.begin(), frequencies.end(), 0);
 	size_t read = 0;
+
+	const auto& procCollection = [&]()
+	{
+		if (collections.empty()) return;
+		shuffle(collections.begin(), collections.end(), rg);
+		if (numWorkers > 1)
+		{
+			vector<future<void>> futures;
+			futures.reserve(collections.size());
+			for (auto& d : collections)
+			{
+				futures.emplace_back(workers.enqueue([&d, window_length, start_lr, this](size_t threadId)
+				{
+					trainVectors(d.data(), d.size(), window_length, start_lr, threadId);
+				}));
+			}
+			for (auto& f : futures) f.get();
+		}
+		else
+		{
+			for (auto& d : collections)
+			{
+				trainVectors(d.data(), d.size(), window_length, start_lr);
+			}
+		}
+		collections.clear();
+	};
+
 	for (size_t e = 0; e < epoch; ++e)
 	{
 		for (size_t id = 0; ; ++id)
@@ -289,14 +326,11 @@ void AdaGramModel::train(const function<vector<string>(size_t, double&)>& reader
 			auto rdoc = reader(id, progress);
 			if (rdoc.empty()) break;
 
-			// estimate total size more precisely
-			read += rdoc.size();
-			if (!e && progress)
+			if (rdoc.size() < 3)
 			{
-				totalWords = read / progress * epoch;
+				procWords += rdoc.size();
+				continue;
 			}
-
-			if (rdoc.size() < 3) continue;
 			vector<uint32_t> doc;
 			doc.reserve(rdoc.size());
 			for (auto& w : rdoc)
@@ -307,63 +341,11 @@ void AdaGramModel::train(const function<vector<string>(size_t, double&)>& reader
 			collections.emplace_back(move(doc));
 			if (collections.size() >= batch)
 			{
-				shuffle(collections.begin(), collections.end(), rg);
-				for (auto& d : collections)
-				{
-					trainVectors(d.data(), d.size(), window_length, start_lr);
-				}
-				collections.clear();
+				procCollection();
 			}
 		}
 	}
-	if (!collections.empty())
-	{
-		shuffle(collections.begin(), collections.end(), rg);
-		for (auto& d : collections)
-		{
-			trainVectors(d.data(), d.size(), window_length, start_lr);
-		}
-	}
-}
-
-void AdaGramModel::train(std::istream & ifs, size_t minCnt)
-{
-	vector<uint32_t> doc;
-
-	{
-		WordDictionary<> rdict;
-		string word;
-		vector<size_t> rdoc;
-		while (ifs >> word)
-		{
-			if (word == ".") continue;
-			rdoc.emplace_back(rdict.getOrAdd(word));
-		}
-
-		vector<size_t> rfreqs(rdict.size()), rmap(rdict.size(), (size_t)-1);
-		for (auto x : rdoc)
-		{
-			rfreqs[x]++;
-		}
-
-		for (size_t i = 0; i < rdict.size(); ++i)
-		{
-			if (rfreqs[i] < minCnt) continue;
-			rmap[i] = vocabs.add(rdict.getStr(i));
-			frequencies.emplace_back(rfreqs[i]);
-		}
-
-		for (auto x : rdoc)
-		{
-			if (rmap[x] != (size_t)-1) doc.emplace_back(rmap[x]);
-		}
-	}
-	buildModel();
-	totalWords = doc.size();
-	while (procWords < totalWords)
-	{
-		trainVectors(&doc[procWords], min(64000llu, totalWords - procWords), 4, 0.025);
-	}
+	procCollection();
 }
 
 std::pair<Eigen::VectorXf, size_t> AdaGramModel::getExpectedPi(const std::string & word) const
@@ -402,4 +384,98 @@ std::vector<std::tuple<std::string, size_t, float>> AdaGramModel::nearestNeighbo
 		sim.data()[idx] = -INFINITY;
 	}
 	return top;
+}
+
+std::vector<float> AdaGramModel::disambiguate(const std::string & word, const std::vector<std::string>& context, bool use_prior, float min_prob) const
+{
+	const size_t V = vocabs.size();
+	size_t wv = vocabs.get(word);
+	if (wv == (size_t)-1) return {};
+
+	VectorXf z = VectorXf::Zero(T);
+	if (use_prior)
+	{
+		z = getExpectedPi(wv).first;
+		for (size_t k = 0; k < T; ++k)
+		{
+			if (z[k] < min_prob) z[k] = 0;
+			z[k] = log(z[k]);
+		}
+	}
+
+	for (auto& y : context)
+	{
+		size_t yId = vocabs.get(y);
+		if (yId == (size_t)-1) continue;
+		updateZ(z, wv, yId);
+	}
+
+	exp_normalize(z);
+	return { z.data(), z.data() + T };
+}
+
+
+template<class _Ty1, size_t _Rows, size_t _Cols>
+inline void writeToBinStream(std::ostream& os, const Matrix<_Ty1, _Rows, _Cols>& v)
+{
+	for (size_t i = 0; i < v.size(); ++i)
+	{
+		writeToBinStream(os, v.data()[i]);
+	}
+}
+
+template<class _Ty1, size_t _Rows, size_t _Cols>
+inline void readFromBinStream(std::istream& is, Matrix<_Ty1, _Rows, _Cols>& v)
+{
+	for (size_t i = 0; i < v.size(); ++i)
+	{
+		readFromBinStream(is, v.data()[i]);
+	}
+}
+
+void AdaGramModel::saveModel(std::ostream & os) const
+{
+	writeToBinStream(os, (uint32_t)M);
+	writeToBinStream(os, (uint32_t)T);
+	writeToBinStream(os, alpha);
+	writeToBinStream(os, d);
+	writeToBinStream(os, sense_threshold);
+	writeToBinStream(os, (uint32_t)context_cut);
+	writeToBinStream(os, (uint32_t)code.rows());
+	vocabs.writeToFile(os);
+	writeToBinStream(os, frequencies);
+	writeToBinStream(os, in);
+	writeToBinStream(os, out);
+	writeToBinStream(os, counts);
+	writeToBinStream(os, code);
+	writeToBinStream(os, path);
+}
+
+AdaGramModel AdaGramModel::loadModel(std::istream & is)
+{
+	size_t M = readFromBinStream<uint32_t>(is);
+	size_t T = readFromBinStream<uint32_t>(is);
+	float alpha = readFromBinStream<float>(is);
+	float d = readFromBinStream<float>(is);
+	float sense_threshold = readFromBinStream<float>(is);
+	bool context_cut = readFromBinStream<uint32_t>(is);
+	size_t max_length = readFromBinStream<uint32_t>(is);
+	AdaGramModel ret{ M, T, alpha, d };
+	ret.sense_threshold = sense_threshold;
+	ret.context_cut = context_cut;
+	ret.vocabs.readFromFile(is);
+	size_t V = ret.vocabs.size();
+	ret.in.resize(M, T*V);
+	ret.out.resize(M, V);
+	ret.counts.resize(T, V);
+	ret.code.resize(max_length, V);
+	ret.path.resize(max_length, V);
+
+	readFromBinStream(is, ret.frequencies);
+	readFromBinStream(is, ret.in);
+	readFromBinStream(is, ret.out);
+	readFromBinStream(is, ret.counts);
+	readFromBinStream(is, ret.code);
+	readFromBinStream(is, ret.path);
+	return ret;
 }

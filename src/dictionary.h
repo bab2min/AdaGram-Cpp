@@ -123,4 +123,6 @@ public:
 			word2id[id2word[i]] = i;
 		}
 	}
+
+	const std::vector<KeyType>& getKeys() const { return id2word; }
 };

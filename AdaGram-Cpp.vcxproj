@@ -22,19 +22,11 @@
     <ClInclude Include="src\AdaGramModel.h" />
     <ClInclude Include="src\dictionary.h" />
     <ClInclude Include="src\gamma.h" />
-    <ClInclude Include="src\gradient.h" />
-    <ClInclude Include="src\kahan.h" />
+    <ClInclude Include="src\IOUtils.h" />
     <ClInclude Include="src\LUT.hpp" />
     <ClInclude Include="src\mathUtils.h" />
-    <ClInclude Include="src\mdvector.h" />
-    <ClInclude Include="src\predict.h" />
-    <ClInclude Include="src\skip_gram.h" />
-    <ClInclude Include="src\softmax.h" />
-    <ClInclude Include="src\stick_breaking.h" />
-    <ClInclude Include="src\textutil.h" />
+    <ClInclude Include="src\ThreadPool.h" />
     <ClInclude Include="src\Timer.h" />
-    <ClInclude Include="src\util.h" />
-    <ClInclude Include="src\VectorModel.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\main.cpp" />

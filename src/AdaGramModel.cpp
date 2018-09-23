@@ -269,7 +269,8 @@ inline void exp_normalize(VectorXf& z)
 	z /= z.sum();
 }
 
-void AdaGramModel::trainVectors(const uint32_t * ws, size_t N, size_t window_length, float start_lr, size_t threadId)
+void AdaGramModel::trainVectors(const uint32_t * ws, size_t N, size_t window_length, float start_lr,
+	ThreadLocalData& ld, size_t threadId)
 {
 	size_t senses = 0, max_senses = 0;
 	uniform_int_distribution<size_t> uid{ 0, window_length > 2 ? window_length - 2 : 0 };
@@ -282,7 +283,7 @@ void AdaGramModel::trainVectors(const uint32_t * ws, size_t N, size_t window_len
 		float lr1 = std::max(start_lr * (1 - procWords / (totalWords + 1.f)), start_lr * 1e-4f);
 		float lr2 = lr1;
 
-		int random_reduce = context_cut ? uid(rg) : 0;
+		int random_reduce = context_cut ? uid(ld.rg) : 0;
 		int window = window_length - random_reduce;
 		size_t jBegin = 0, jEnd = N;
 		if (i > window) jBegin = i - window;
@@ -301,7 +302,7 @@ void AdaGramModel::trainVectors(const uint32_t * ws, size_t N, size_t window_len
 			negativeSamples.clear();
 			while (negativeSamples.size() < negativeSampleSize)
 			{
-				auto nw = unigramTable(rg);
+				auto nw = unigramTable(ld.rg);
 				if (positiveSamples.count(nw)) continue;
 				negativeSamples.emplace_back(nw);
 			}
@@ -406,28 +407,37 @@ void AdaGramModel::train(const function<vector<string>(size_t)>& reader,
 {
 	if (!numWorkers) numWorkers = thread::hardware_concurrency();
 	ThreadPool workers{ numWorkers };
+	vector<ThreadLocalData> ld;
+	if (numWorkers > 1)
+	{
+		ld.resize(numWorkers);
+		for (auto& l : ld)
+		{
+			l.rg = mt19937_64{ globalData.rg() };
+		}
+	}
 	vector<vector<uint32_t>> collections;
 	timer.reset();
 	totalLL = 0;
 	totalLLCnt = 0;
+	size_t totW = accumulate(frequencies.begin(), frequencies.end(), 0);
 	procWords = lastProcWords = 0;
 	// estimate total size
-	totalWords = epoch * accumulate(frequencies.begin(), frequencies.end(), 0);
+	totalWords = epoch * totW;
 	size_t read = 0;
-
 	const auto& procCollection = [&]()
 	{
 		if (collections.empty()) return;
-		shuffle(collections.begin(), collections.end(), rg);
+		shuffle(collections.begin(), collections.end(), globalData.rg);
 		if (numWorkers > 1)
 		{
 			vector<future<void>> futures;
 			futures.reserve(collections.size());
 			for (auto& d : collections)
 			{
-				futures.emplace_back(workers.enqueue([&d, window_length, start_lr, this](size_t threadId)
+				futures.emplace_back(workers.enqueue([&d, &ld, window_length, start_lr, this](size_t threadId)
 				{
-					trainVectors(d.data(), d.size(), window_length, start_lr, threadId);
+					trainVectors(d.data(), d.size(), window_length, start_lr, ld[threadId], threadId);
 				}));
 			}
 			for (auto& f : futures) f.get();
@@ -436,7 +446,7 @@ void AdaGramModel::train(const function<vector<string>(size_t)>& reader,
 		{
 			for (auto& d : collections)
 			{
-				trainVectors(d.data(), d.size(), window_length, start_lr);
+				trainVectors(d.data(), d.size(), window_length, start_lr, globalData);
 			}
 		}
 		collections.clear();
@@ -449,18 +459,28 @@ void AdaGramModel::train(const function<vector<string>(size_t)>& reader,
 			auto rdoc = reader(id);
 			if (rdoc.empty()) break;
 
-			if (rdoc.size() < 3)
-			{
-				procWords += rdoc.size();
-				continue;
-			}
 			vector<uint32_t> doc;
 			doc.reserve(rdoc.size());
 			for (auto& w : rdoc)
 			{
 				auto id = vocabs.get(w);
-				if (id >= 0) doc.emplace_back(id);
+				if (id < 0) continue;
+				float ww = subsampling / (frequencies[id] / (float)totW);
+				if (subsampling > 0 &&
+					generate_canonical<float, 24>(globalData.rg) > sqrt(ww) + ww)
+				{
+					procWords += 1;
+					continue;
+				}
+				doc.emplace_back(id);
 			}
+
+			if (doc.size() < 3)
+			{
+				procWords += doc.size();
+				continue;
+			}
+
 			collections.emplace_back(move(doc));
 			if (collections.size() >= batch)
 			{

@@ -23,6 +23,11 @@ private:
 		std::vector<uint32_t> path;
 	};
 
+	struct ThreadLocalData
+	{
+		std::mt19937_64 rg;
+	};
+
 	std::vector<size_t> frequencies; // (V)
 	Eigen::MatrixXf in; // (M, T * V)
 	Eigen::MatrixXf inNormalized; // (M, T * V)
@@ -34,6 +39,7 @@ private:
 	size_t T; // number of max prototype of word
 	float alpha; // parameter for dirichlet process
 	float d; // paramter for pitman-yor process
+	float subsampling;
 	float min_prob = 1e-3; // min probability of stick piece
 	Mode mode;
 
@@ -45,14 +51,11 @@ private:
 	size_t totalLLCnt = 0;
 	double totalLL = 0;
 
-	//float alphaFreqWeight = -.67f;
-
-	std::mt19937_64 rg;
+	ThreadLocalData globalData;
 	WordDictionary<> vocabs;
 
 	std::discrete_distribution<uint32_t> unigramTable;
 	size_t negativeSampleSize = 0;
-
 
 	Timer timer;
 
@@ -67,22 +70,24 @@ private:
 	std::pair<Eigen::VectorXf, size_t> getExpectedLogPi(size_t v) const;
 	std::pair<Eigen::VectorXf, size_t> getExpectedPi(size_t v) const;
 	void buildModel();
-	void trainVectors(const uint32_t* ws, size_t N, size_t window_length, float start_lr, size_t threadId = 0);
+	void trainVectors(const uint32_t* ws, size_t N, size_t window_length, float start_lr, ThreadLocalData& ld, size_t threadId = 0);
 	void updateNormalizedVector();
 public:
 	
 	static bool defaultTest(const std::string& o) { return true; }
 	static std::string defaultTrans(const std::string& o) { return o; }
 
-	AdaGramModel(size_t _M = 100, size_t _T = 5, float _alpha = 1e-1, float _d = 0, size_t _negativeSampleSize = 0, size_t seed = std::random_device()())
-		: M(_M), T(_T), alpha(_alpha), d(_d),
+	AdaGramModel(size_t _M = 100, size_t _T = 5, float _alpha = 1e-1, float _d = 0, 
+		float _subsampling = 1e-4, size_t _negativeSampleSize = 0, size_t seed = std::random_device()())
+		: M(_M), T(_T), alpha(_alpha), d(_d), subsampling(_subsampling),
 		mode(_negativeSampleSize ? Mode::negativeSampling : Mode::hierarchicalSoftmax),
-		negativeSampleSize(_negativeSampleSize),
-		rg(seed)
-	{}
+		negativeSampleSize(_negativeSampleSize)
+	{
+		globalData.rg = std::mt19937_64{ seed };
+	}
 
 	AdaGramModel(AdaGramModel&& o)
-		: M(o.M), T(o.T), alpha(o.alpha), d(o.d), rg(o.rg),
+		: M(o.M), T(o.T), alpha(o.alpha), d(o.d), globalData(o.globalData),
 		min_prob(o.min_prob), sense_threshold(o.sense_threshold), context_cut(o.context_cut),
 		vocabs(std::move(o.vocabs)), frequencies(std::move(o.frequencies)),
 		in(std::move(o.in)), out(std::move(o.out)), counts(std::move(o.counts)),
@@ -96,7 +101,7 @@ public:
 		T = o.T;
 		alpha = o.alpha;
 		d = o.d;
-		rg = o.rg;
+		globalData = o.globalData;
 		min_prob = o.min_prob;
 		sense_threshold = o.sense_threshold;
 		context_cut = o.context_cut;

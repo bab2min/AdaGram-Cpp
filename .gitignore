@@ -270,3 +270,6 @@ __pycache__/
 /enwikiTest_ns_1.txt
 /enwikiTest_ns.txt
 /enwikiTest.txt
+/sjTest_subsampling.txt
+/namuTest_subsampling.txt
+/enwikiTest_subsampling.txt

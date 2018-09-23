@@ -5,6 +5,7 @@
 #include <numeric>
 #include <iostream>
 #include <iterator>
+#include <unordered_set>
 
 using namespace std;
 using namespace Eigen;
@@ -91,24 +92,35 @@ std::vector<AdaGramModel::HierarchicalOuput> AdaGramModel::buildHuffmanTree() co
 void AdaGramModel::buildModel()
 {
 	const size_t V = vocabs.size();
-	auto outputs = buildHuffmanTree();
-	size_t max_length = max_element(outputs.begin(), outputs.end(), [](const HierarchicalOuput& a, const HierarchicalOuput& b)
-	{
-		return a.code.size() < b.code.size();
-	})->code.size();
-
 	// allocate & initialize model
 	in = MatrixXf::Random(M, T * V) * (.5f / M);
 	out = MatrixXf::Random(M, V) * (.5f / M);
-	path = Matrix<uint32_t, Dynamic, Dynamic>::Zero(max_length, V);
-	code = Matrix<int8_t, Dynamic, Dynamic>::Zero(max_length, V);
 	counts = MatrixXf::Zero(T, V);
 	for (size_t v = 0; v < V; ++v) counts(0, v) = frequencies[v];
 
-	for (size_t v = 0; v < V; ++v)
+	// build Huffman Tree for Hierarchical Softmax
+	if (mode == Mode::hierarchicalSoftmax)
 	{
-		copy(outputs[v].code.begin(), outputs[v].code.end(), code.col(v).data());
-		copy(outputs[v].path.begin(), outputs[v].path.end(), path.col(v).data());
+		auto outputs = buildHuffmanTree();
+		size_t max_length = max_element(outputs.begin(), outputs.end(), [](const HierarchicalOuput& a, const HierarchicalOuput& b)
+		{
+			return a.code.size() < b.code.size();
+		})->code.size();
+		path = Matrix<uint32_t, Dynamic, Dynamic>::Zero(max_length, V);
+		code = Matrix<int8_t, Dynamic, Dynamic>::Zero(max_length, V);
+
+		for (size_t v = 0; v < V; ++v)
+		{
+			copy(outputs[v].code.begin(), outputs[v].code.end(), code.col(v).data());
+			copy(outputs[v].path.begin(), outputs[v].path.end(), path.col(v).data());
+		}
+	}
+	// build Unigram Table for Negative Sampling
+	else
+	{
+		vector<double> weights;
+		transform(frequencies.begin(), frequencies.end(), back_inserter(weights), [](auto w) { return pow(w, 0.75); });
+		unigramTable = discrete_distribution<uint32_t>(weights.begin(), weights.end());
 	}
 }
 
@@ -159,10 +171,10 @@ std::pair<Eigen::VectorXf, size_t> AdaGramModel::getExpectedPi(size_t v) const
 
 void AdaGramModel::updateZ(Eigen::VectorXf & z, size_t x, size_t y) const
 {
-	for (int n = 0; n < code.rows() && code(n, y); ++n) 
+	for (int n = 0; n < code.rows() && code(n, y); ++n)
 	{
 		auto ocol = out.col(path(n, y));
-		for (int k = 0; k < T; ++k) 
+		for (int k = 0; k < T; ++k)
 		{
 			float f = in.col(x * T + k).dot(ocol);
 			z[k] += logsigmoid(f * code(n, y));
@@ -176,13 +188,12 @@ float AdaGramModel::inplaceUpdate(size_t x, size_t y, const Eigen::VectorXf& z, 
 	VectorXf out_grad = VectorXf::Zero(M);
 
 	float pr = 0;
-
-	for (int n = 0; n < code.rows() && code(n, y); ++n) 
+	for (int n = 0; n < code.rows() && code(n, y); ++n)
 	{
 		auto outcol = out.col(path(n, y));
 		out_grad.setZero();
 
-		for (int k = 0; k < T; ++k) 
+		for (int k = 0; k < T; ++k)
 		{
 			if (z[k] < sense_threshold) continue;
 			auto incol = in.col(x * T + k);
@@ -198,13 +209,51 @@ float AdaGramModel::inplaceUpdate(size_t x, size_t y, const Eigen::VectorXf& z, 
 		outcol += out_grad;
 	}
 
-	for (int k = 0; k < T; ++k) 
+	for (int k = 0; k < T; ++k)
 	{
 		if (z[k] < sense_threshold) continue;
 		auto incol = in.col(x * T + k);
 		incol += in_grad.col(k);
 	}
+	return pr;
+}
 
+void AdaGramModel::updateZ_NS(Eigen::VectorXf & z, size_t x, size_t y, bool negative) const
+{
+	for (int k = 0; k < T; ++k)
+	{
+		float f = in.col(x * T + k).dot(out.col(y));
+		z[k] += logsigmoid(f * (negative ? -1 : 1));
+	}
+}
+
+float AdaGramModel::inplaceUpdate_NS(size_t x, size_t y, const Eigen::VectorXf & z, float lr, bool negative)
+{
+	MatrixXf in_grad = MatrixXf::Zero(M, T);
+	VectorXf out_grad = VectorXf::Zero(M);
+
+	float pr = 0;
+	auto outcol = out.col(y);
+	for (int k = 0; k < T; ++k)
+	{
+		if (z[k] < sense_threshold) continue;
+		auto incol = in.col(x * T + k);
+		float f = incol.dot(outcol);
+		pr += z[k] * logsigmoid(f * (negative ? -1 : 1));
+
+		float d = (negative ? 0 : 1) - sigmoid(f);
+		float g = z[k] * lr * d;
+
+		in_grad.col(k) += g * outcol;
+		out_grad += g * incol;
+	}
+	outcol += out_grad;
+
+	for (int k = 0; k < T; ++k)
+	{
+		if (z[k] < sense_threshold) continue;
+		in.col(x * T + k) += in_grad.col(k);
+	}
 	return pr;
 }
 
@@ -223,9 +272,10 @@ inline void exp_normalize(VectorXf& z)
 void AdaGramModel::trainVectors(const uint32_t * ws, size_t N, size_t window_length, float start_lr, size_t threadId)
 {
 	size_t senses = 0, max_senses = 0;
-
-	std::uniform_int_distribution<size_t> uid{ 0, window_length - 1 };
-
+	uniform_int_distribution<size_t> uid{ 0, window_length > 2 ? window_length - 2 : 0 };
+	bernoulli_distribution bd{ .1 };
+	vector<uint32_t> negativeSamples;
+	negativeSamples.reserve(negativeSampleSize);
 	for (size_t i = 0; i < N; ++i)
 	{
 		const auto& x = ws[i];
@@ -234,34 +284,95 @@ void AdaGramModel::trainVectors(const uint32_t * ws, size_t N, size_t window_len
 
 		int random_reduce = context_cut ? uid(rg) : 0;
 		int window = window_length - random_reduce;
+		size_t jBegin = 0, jEnd = N;
+		if (i > window) jBegin = i - window;
+		if (i + window < N) jEnd = i + window;
+
+		// sample negative examples, which is not included in positive
+		if (mode != Mode::hierarchicalSoftmax)
+		{
+			unordered_set<uint32_t> positiveSamples;
+			positiveSamples.emplace(x);
+			for (auto j = jBegin; j < jEnd; ++j)
+			{
+				if (i == j) continue;
+				positiveSamples.emplace(ws[j]);
+			}
+			negativeSamples.clear();
+			while (negativeSamples.size() < negativeSampleSize)
+			{
+				auto nw = unigramTable(rg);
+				if (positiveSamples.count(nw)) continue;
+				negativeSamples.emplace_back(nw);
+			}
+		}
 
 		lock_guard<mutex> lock(mtx);
 
+		// updating z, which represents probabilities of each sense
 		auto t = getExpectedLogPi(x);
 		VectorXf& z = t.first;
 		senses += t.second;
 		max_senses = std::max(max_senses, t.second);
 
-		size_t jBegin = 0, jEnd = N;
-		if (i > window) jBegin = i - window;
-		if (i + window < N) jEnd = i + window;
-
-		for (auto j = jBegin; j < jEnd; ++j)
+		// hierarchical softmax
+		if (mode == Mode::hierarchicalSoftmax)
 		{
-			if (i == j) continue;
-			updateZ(z, x, ws[j]);
-			assert(isnormal(z[0]));
+			for (auto j = jBegin; j < jEnd; ++j)
+			{
+				if (i == j) continue;
+				updateZ(z, x, ws[j]);
+				assert(isnormal(z[0]));
+			}
+		}
+		// negative sampling
+		else
+		{
+			for (auto j = jBegin; j < jEnd; ++j)
+			{
+				if (i == j) continue;
+				updateZ_NS(z, x, ws[j], false);
+				assert(isnormal(z[0]));
+			}
+			for (auto ns : negativeSamples)
+			{
+				updateZ_NS(z, x, ns, true);
+				assert(isnormal(z[0]));
+			}
 		}
 
 		exp_normalize(z);
-
-		for (auto j = jBegin; j < jEnd; ++j)
+		
+		// update in, out vector
+		// hierarchical softmax
+		if (mode == Mode::hierarchicalSoftmax)
 		{
-			if (i == j) continue;
-			float ll = inplaceUpdate(x, ws[j], z, lr1);
-			assert(isnormal(ll));
-			totalLLCnt++;
-			totalLL += (ll - totalLL) / totalLLCnt;
+			for (auto j = jBegin; j < jEnd; ++j)
+			{
+				if (i == j) continue;
+				float ll = inplaceUpdate(x, ws[j], z, lr1);
+				assert(isnormal(ll));
+				totalLLCnt++;
+				totalLL += (ll - totalLL) / totalLLCnt;
+			}
+		}
+		// negative sampling
+		else
+		{
+			for (auto j = jBegin; j < jEnd; ++j)
+			{
+				if (i == j) continue;
+				float ll = inplaceUpdate_NS(x, ws[j], z, lr1, false);
+				assert(isnormal(ll));
+				totalLLCnt++;
+				totalLL += (ll - totalLL) / totalLLCnt;
+			}
+			for (auto ns : negativeSamples)
+			{
+				float ll = inplaceUpdate_NS(x, ns, z, lr1, true);
+				assert(isnormal(ll));
+				totalLL += ll / totalLLCnt;
+			}
 		}
 
 		// variational update for q(pi_v)

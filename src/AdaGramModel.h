@@ -9,6 +9,14 @@
 
 class AdaGramModel
 {
+public:
+	enum class Mode
+	{
+		hierarchicalSoftmax,
+		negativeSampling
+	};
+
+private:
 	struct HierarchicalOuput
 	{
 		std::vector<int8_t> code;
@@ -27,6 +35,7 @@ class AdaGramModel
 	float alpha; // parameter for dirichlet process
 	float d; // paramter for pitman-yor process
 	float min_prob = 1e-3; // min probability of stick piece
+	Mode mode;
 
 	float sense_threshold = 1e-10;
 	bool context_cut = true;
@@ -41,6 +50,10 @@ class AdaGramModel
 	std::mt19937_64 rg;
 	WordDictionary<> vocabs;
 
+	std::discrete_distribution<uint32_t> unigramTable;
+	size_t negativeSampleSize = 0;
+
+
 	Timer timer;
 
 	std::mutex mtx;
@@ -48,6 +61,8 @@ class AdaGramModel
 	std::vector<HierarchicalOuput> buildHuffmanTree() const;
 	void updateZ(Eigen::VectorXf& z, size_t x, size_t y) const;
 	float inplaceUpdate(size_t x, size_t y, const Eigen::VectorXf& z, float lr);
+	void updateZ_NS(Eigen::VectorXf& z, size_t x, size_t y, bool negative) const;
+	float inplaceUpdate_NS(size_t x, size_t y, const Eigen::VectorXf& z, float lr, bool negative);
 	void updateCounts(size_t x, const Eigen::VectorXf& localCounts, float lr);
 	std::pair<Eigen::VectorXf, size_t> getExpectedLogPi(size_t v) const;
 	std::pair<Eigen::VectorXf, size_t> getExpectedPi(size_t v) const;
@@ -55,9 +70,15 @@ class AdaGramModel
 	void trainVectors(const uint32_t* ws, size_t N, size_t window_length, float start_lr, size_t threadId = 0);
 	void updateNormalizedVector();
 public:
+	
+	static bool defaultTest(const std::string& o) { return true; }
+	static std::string defaultTrans(const std::string& o) { return o; }
 
-	AdaGramModel(size_t _M = 100, size_t _T = 5, float _alpha = 1e-1, float _d = 0, size_t seed = std::random_device()())
-		: M(_M), T(_T), alpha(_alpha), d(_d), rg(seed)
+	AdaGramModel(size_t _M = 100, size_t _T = 5, float _alpha = 1e-1, float _d = 0, size_t _negativeSampleSize = 0, size_t seed = std::random_device()())
+		: M(_M), T(_T), alpha(_alpha), d(_d),
+		mode(_negativeSampleSize ? Mode::negativeSampling : Mode::hierarchicalSoftmax),
+		negativeSampleSize(_negativeSampleSize),
+		rg(seed)
 	{}
 
 	AdaGramModel(AdaGramModel&& o)
@@ -92,7 +113,7 @@ public:
 
 	template<class _Iter, class _Pred, class _Transform>
 	void buildVocab(_Iter begin, _Iter end, size_t minCnt = 20, 
-		_Pred test = [](const std::string&) { return true; }, _Transform trans = [](const std::string& t) { return t; })
+		_Pred test = defaultTest, _Transform trans = defaultTrans)
 	{
 		WordDictionary<> rdict;
 		std::vector<size_t> rfreqs;
@@ -118,8 +139,8 @@ public:
 		size_t window_length = 4, float start_lr = 0.025, size_t batchSents = 1000, size_t epochs = 1);
 
 	void buildTrain(std::istream& is, size_t minCnt = 20, 
-		const std::function<bool(const std::string&)>& test = [](const std::string&) { return true; }, 
-		const std::function<std::string(const std::string&)>& trans = [](const std::string& t) { return t; },
+		const std::function<bool(const std::string&)>& test = defaultTest, 
+		const std::function<std::string(const std::string&)>& trans = defaultTrans,
 		size_t numWorkers = 0, size_t window_length = 4, float start_lr = 0.025, size_t batchSents = 1000, size_t epochs = 1);
 
 	std::pair<Eigen::VectorXf, size_t> getExpectedPi(const std::string& word) const;

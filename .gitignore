@@ -262,3 +262,8 @@ __pycache__/
 /data/enwiki3000.txt
 /data/enwiki10000.txt
 *.mdl
+/sjTest_aa.txt
+/sjTest_1.txt
+/sjTest.txt
+/outTest.txt
+/namuTest.txt

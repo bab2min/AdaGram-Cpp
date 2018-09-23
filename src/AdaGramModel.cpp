@@ -3,6 +3,8 @@
 #include "IOUtils.h"
 #include "ThreadPool.h"
 #include <numeric>
+#include <iostream>
+#include <iterator>
 
 using namespace std;
 using namespace Eigen;
@@ -112,6 +114,7 @@ void AdaGramModel::buildModel()
 
 pair<VectorXf, size_t> AdaGramModel::getExpectedLogPi(size_t v) const
 {
+	float vAlpha = alpha; // *pow(log(frequencies[v]), alphaFreqWeight);
 	VectorXf pi = counts.col(v);
 	size_t senses = 0;
 	float r = 0.f, x = 1.f;
@@ -119,7 +122,7 @@ pair<VectorXf, size_t> AdaGramModel::getExpectedLogPi(size_t v) const
 	for (size_t k = 0; k < T - 1; ++k)
 	{
 		ts = std::max(ts - pi[k], 0.);
-		float a = 1 + pi[k] - d, b = alpha + (k + 1) * d + ts;
+		float a = 1 + pi[k] - d, b = vAlpha + (k + 1) * d + ts;
 		pi[k] = meanlog_beta(a, b) + r;
 		r += meanlog_mirror(a, b);
 
@@ -135,6 +138,7 @@ pair<VectorXf, size_t> AdaGramModel::getExpectedLogPi(size_t v) const
 
 std::pair<Eigen::VectorXf, size_t> AdaGramModel::getExpectedPi(size_t v) const
 {
+	float vAlpha = alpha; // *pow(log(frequencies[v]), alphaFreqWeight);
 	VectorXf pi(T);
 	size_t senses = 0;
 	float r = 1.f;
@@ -142,7 +146,7 @@ std::pair<Eigen::VectorXf, size_t> AdaGramModel::getExpectedPi(size_t v) const
 	for (size_t k = 0; k < T - 1; ++k)
 	{
 		ts = std::max(ts - counts(k, v), 0.f);
-		float a = 1 + counts(k, v) - d, b = alpha + (k + 1) * d + ts;
+		float a = 1 + counts(k, v) - d, b = vAlpha + (k + 1) * d + ts;
 		pi[k] = mean_beta(a, b) * r;
 		if (pi[k] >= min_prob) senses++;
 		r = std::max(r - pi[k], 0.f);
@@ -209,7 +213,7 @@ void AdaGramModel::updateCounts(size_t x, const Eigen::VectorXf & localCounts, f
 	counts.col(x) += lr * (localCounts * frequencies[x] - counts.col(x).eval());
 }
 
-void exp_normalize(VectorXf& z)
+inline void exp_normalize(VectorXf& z)
 {
 	float max = z.maxCoeff();
 	z = (z - VectorXf::Constant(z.size(), max)).array().exp();
@@ -277,7 +281,16 @@ void AdaGramModel::trainVectors(const uint32_t * ws, size_t N, size_t window_len
 	}
 }
 
-void AdaGramModel::train(const function<vector<string>(size_t, double&)>& reader, 
+void AdaGramModel::updateNormalizedVector()
+{
+	inNormalized = MatrixXf::Zero(in.rows(), in.cols());
+	for (size_t i = 0; i < T * vocabs.size(); ++i)
+	{
+		inNormalized.col(i) = in.col(i).normalized();
+	}
+}
+
+void AdaGramModel::train(const function<vector<string>(size_t)>& reader, 
 	size_t numWorkers, size_t window_length, float start_lr, size_t batch, size_t epoch)
 {
 	if (!numWorkers) numWorkers = thread::hardware_concurrency();
@@ -322,8 +335,7 @@ void AdaGramModel::train(const function<vector<string>(size_t, double&)>& reader
 	{
 		for (size_t id = 0; ; ++id)
 		{
-			double progress = 0;
-			auto rdoc = reader(id, progress);
+			auto rdoc = reader(id);
 			if (rdoc.empty()) break;
 
 			if (rdoc.size() < 3)
@@ -346,6 +358,35 @@ void AdaGramModel::train(const function<vector<string>(size_t, double&)>& reader
 		}
 	}
 	procCollection();
+
+	updateNormalizedVector();
+}
+
+void AdaGramModel::buildTrain(istream & is, size_t minCnt, 
+	const function<bool(const string&)>& test, const function<string(const string&)>& trans,
+	size_t numWorkers, size_t window_length, float start_lr, size_t batchSents, size_t epochs)
+{
+	istream_iterator<string> iBegin{ is }, iEnd{};
+	buildVocab(iBegin, iEnd, minCnt, test, trans);
+	train([&is, &trans](size_t id)->vector<string>
+	{
+		if (id == 0)
+		{
+			is.clear();
+			is.seekg(0);
+		}
+		string line;
+		while(1)
+		{
+			if (!getline(is, line)) return {};
+			istringstream iss{ line };
+			istream_iterator<string> iBegin{ iss }, iEnd{};
+			vector<string> ret;
+			transform(iBegin, iEnd, back_inserter(ret), trans);
+			if (ret.empty()) continue;
+			return move(ret);
+		}
+	}, numWorkers, window_length, start_lr, batchSents, epochs);
 }
 
 std::pair<Eigen::VectorXf, size_t> AdaGramModel::getExpectedPi(const std::string & word) const
@@ -360,7 +401,9 @@ std::vector<std::tuple<std::string, size_t, float>> AdaGramModel::nearestNeighbo
 	const size_t V = vocabs.size();
 	size_t wv = vocabs.get(word);
 	if (wv == (size_t)-1) return {};
-	auto vec = in.col(wv * T + ws).normalized();
+	auto vec = inNormalized.col(wv * T + ws);
+
+	if (counts(ws, wv) < min_count) return {};
 
 	std::vector<std::tuple<std::string, size_t, float>> top;
 	MatrixXf sim(T, V);
@@ -368,12 +411,12 @@ std::vector<std::tuple<std::string, size_t, float>> AdaGramModel::nearestNeighbo
 	{
 		for (size_t s = 0; s < T; ++s)
 		{
-			if (counts(s, v) < min_count)
+			if ((v == wv && s == ws) || counts(s, v) < min_count)
 			{
 				sim(s, v) = -INFINITY;
 				continue;
 			}
-			sim(s, v) = in.col(v * T + s).normalized().dot(vec);
+			sim(s, v) = inNormalized.col(v * T + s).dot(vec);
 		}
 	}
 
@@ -477,5 +520,7 @@ AdaGramModel AdaGramModel::loadModel(std::istream & is)
 	readFromBinStream(is, ret.counts);
 	readFromBinStream(is, ret.code);
 	readFromBinStream(is, ret.path);
+
+	ret.updateNormalizedVector();
 	return ret;
 }

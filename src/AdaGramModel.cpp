@@ -31,7 +31,7 @@ struct HierarchicalSoftmaxNode
 };
 
 
-std::vector<AdaGramModel::HierarchicalOuput> AdaGramModel::buildHuffmanTree() const
+vector<AdaGramModel::HierarchicalOuput> AdaGramModel::buildHuffmanTree() const
 {
 	auto V = vocabs.size();
 	auto nodes = vector<HierarchicalSoftmaxNode>(V);
@@ -77,8 +77,8 @@ std::vector<AdaGramModel::HierarchicalOuput> AdaGramModel::buildHuffmanTree() co
 	auto outputs = vector<HierarchicalOuput>(V);
 	for (auto v = 0; v < V; ++v)
 	{
-		std::vector<int8_t> code;
-		std::vector<uint32_t> path;
+		vector<int8_t> code;
+		vector<uint32_t> path;
 		for (auto& p : HierarchicalSoftmaxNode::softmax_path(nodes, V, v))
 		{
 			code.emplace_back(p.second);
@@ -133,13 +133,13 @@ pair<VectorXf, size_t> AdaGramModel::getExpectedLogPi(size_t v) const
 	double ts = pi.sum();
 	for (size_t k = 0; k < T - 1; ++k)
 	{
-		ts = std::max(ts - pi[k], 0.);
+		ts = max(ts - pi[k], 0.);
 		float a = 1 + pi[k] - d, b = vAlpha + (k + 1) * d + ts;
 		pi[k] = meanlog_beta(a, b) + r;
 		r += meanlog_mirror(a, b);
 
 		float pi_k = mean_beta(a, b) * x;
-		x = std::max(x - pi_k, 0.f);
+		x = max(x - pi_k, 0.f);
 		if (pi_k >= min_prob) senses++;
 	}
 	pi[T - 1] = r;
@@ -148,7 +148,7 @@ pair<VectorXf, size_t> AdaGramModel::getExpectedLogPi(size_t v) const
 
 }
 
-std::pair<Eigen::VectorXf, size_t> AdaGramModel::getExpectedPi(size_t v) const
+pair<VectorXf, size_t> AdaGramModel::getExpectedPi(size_t v) const
 {
 	float vAlpha = alpha; // *pow(log(frequencies[v]), alphaFreqWeight);
 	VectorXf pi(T);
@@ -157,11 +157,11 @@ std::pair<Eigen::VectorXf, size_t> AdaGramModel::getExpectedPi(size_t v) const
 	float ts = counts.col(v).sum();
 	for (size_t k = 0; k < T - 1; ++k)
 	{
-		ts = std::max(ts - counts(k, v), 0.f);
+		ts = max(ts - counts(k, v), 0.f);
 		float a = 1 + counts(k, v) - d, b = vAlpha + (k + 1) * d + ts;
 		pi[k] = mean_beta(a, b) * r;
 		if (pi[k] >= min_prob) senses++;
-		r = std::max(r - pi[k], 0.f);
+		r = max(r - pi[k], 0.f);
 	}
 	pi[T - 1] = r;
 	if (r >= min_prob) senses++;
@@ -169,7 +169,7 @@ std::pair<Eigen::VectorXf, size_t> AdaGramModel::getExpectedPi(size_t v) const
 }
 
 
-void AdaGramModel::updateZ(Eigen::VectorXf & z, size_t x, size_t y) const
+void AdaGramModel::updateZ(VectorXf & z, size_t x, size_t y) const
 {
 	for (int n = 0; n < code.rows() && code(n, y); ++n)
 	{
@@ -182,7 +182,7 @@ void AdaGramModel::updateZ(Eigen::VectorXf & z, size_t x, size_t y) const
 	}
 }
 
-float AdaGramModel::inplaceUpdate(size_t x, size_t y, const Eigen::VectorXf& z, float lr)
+float AdaGramModel::inplaceUpdate(size_t x, size_t y, const VectorXf& z, float lr)
 {
 	MatrixXf in_grad = MatrixXf::Zero(M, T);
 	VectorXf out_grad = VectorXf::Zero(M);
@@ -218,7 +218,7 @@ float AdaGramModel::inplaceUpdate(size_t x, size_t y, const Eigen::VectorXf& z, 
 	return pr;
 }
 
-void AdaGramModel::updateZ_NS(Eigen::VectorXf & z, size_t x, size_t y, bool negative) const
+void AdaGramModel::updateZ_NS(VectorXf & z, size_t x, size_t y, bool negative) const
 {
 	for (int k = 0; k < T; ++k)
 	{
@@ -227,7 +227,7 @@ void AdaGramModel::updateZ_NS(Eigen::VectorXf & z, size_t x, size_t y, bool nega
 	}
 }
 
-float AdaGramModel::inplaceUpdate_NS(size_t x, size_t y, const Eigen::VectorXf & z, float lr, bool negative)
+float AdaGramModel::inplaceUpdate_NS(size_t x, size_t y, const VectorXf & z, float lr, bool negative)
 {
 	MatrixXf in_grad = MatrixXf::Zero(M, T);
 	VectorXf out_grad = VectorXf::Zero(M);
@@ -257,7 +257,7 @@ float AdaGramModel::inplaceUpdate_NS(size_t x, size_t y, const Eigen::VectorXf &
 	return pr;
 }
 
-void AdaGramModel::updateCounts(size_t x, const Eigen::VectorXf & localCounts, float lr)
+void AdaGramModel::updateCounts(size_t x, const VectorXf & localCounts, float lr)
 {
 	counts.col(x) += lr * (localCounts * frequencies[x] - counts.col(x).eval());
 }
@@ -280,7 +280,7 @@ void AdaGramModel::trainVectors(const uint32_t * ws, size_t N, size_t window_len
 	for (size_t i = 0; i < N; ++i)
 	{
 		const auto& x = ws[i];
-		float lr1 = std::max(start_lr * (1 - procWords / (totalWords + 1.f)), start_lr * 1e-4f);
+		float lr1 = max(start_lr * (1 - procWords / (totalWords + 1.f)), start_lr * 1e-4f);
 		float lr2 = lr1;
 
 		int random_reduce = context_cut ? uid(ld.rg) : 0;
@@ -314,7 +314,7 @@ void AdaGramModel::trainVectors(const uint32_t * ws, size_t N, size_t window_len
 		auto t = getExpectedLogPi(x);
 		VectorXf& z = t.first;
 		senses += t.second;
-		max_senses = std::max(max_senses, t.second);
+		max_senses = max(max_senses, t.second);
 
 		// hierarchical softmax
 		if (mode == Mode::hierarchicalSoftmax)
@@ -520,14 +520,14 @@ void AdaGramModel::buildTrain(istream & is, size_t minCnt,
 	}, numWorkers, window_length, start_lr, batchSents, epochs);
 }
 
-std::pair<Eigen::VectorXf, size_t> AdaGramModel::getExpectedPi(const std::string & word) const
+pair<VectorXf, size_t> AdaGramModel::getExpectedPi(const string & word) const
 {
 	size_t wv = vocabs.get(word);
 	if (wv == (size_t)-1) return {};
 	return getExpectedPi(wv);
 }
 
-std::vector<std::tuple<std::string, size_t, float>> AdaGramModel::nearestNeighbors(const std::string & word, size_t ws, size_t K, float min_count) const
+vector<tuple<string, size_t, float>> AdaGramModel::nearestNeighbors(const string & word, size_t ws, size_t K, float min_count) const
 {
 	const size_t V = vocabs.size();
 	size_t wv = vocabs.get(word);
@@ -536,7 +536,7 @@ std::vector<std::tuple<std::string, size_t, float>> AdaGramModel::nearestNeighbo
 
 	if (counts(ws, wv) < min_count) return {};
 
-	std::vector<std::tuple<std::string, size_t, float>> top;
+	vector<tuple<string, size_t, float>> top;
 	MatrixXf sim(T, V);
 	for (size_t v = 0; v < V; ++v)
 	{
@@ -553,14 +553,14 @@ std::vector<std::tuple<std::string, size_t, float>> AdaGramModel::nearestNeighbo
 
 	for (size_t k = 0; k < K; ++k)
 	{
-		size_t idx = std::max_element(sim.data(), sim.data() + sim.size()) - sim.data();
+		size_t idx = max_element(sim.data(), sim.data() + sim.size()) - sim.data();
 		top.emplace_back(vocabs.getStr(idx / T), idx % T, sim.data()[idx]);
 		sim.data()[idx] = -INFINITY;
 	}
 	return top;
 }
 
-std::vector<float> AdaGramModel::disambiguate(const std::string & word, const std::vector<std::string>& context, bool use_prior, float min_prob) const
+vector<float> AdaGramModel::disambiguate(const string & word, const vector<string>& context, bool use_prior, float min_prob) const
 {
 	const size_t V = vocabs.size();
 	size_t wv = vocabs.get(word);
@@ -588,26 +588,57 @@ std::vector<float> AdaGramModel::disambiguate(const std::string & word, const st
 	return { z.data(), z.data() + T };
 }
 
-
-template<class _Ty1, size_t _Rows, size_t _Cols>
-inline void writeToBinStream(std::ostream& os, const Matrix<_Ty1, _Rows, _Cols>& v)
+vector<tuple<string, size_t, float>> AdaGramModel::mostSimilar(const vector<pair<string, size_t>>& positiveWords, 
+	const vector<pair<string, size_t>>& negativeWords, size_t K, float min_count) const
 {
-	for (size_t i = 0; i < v.size(); ++i)
+	VectorXf vec = VectorXf::Zero(M);
+	const size_t V = vocabs.size();
+	unordered_set<size_t> uniqs;
+	for (auto& p : positiveWords)
 	{
-		writeToBinStream(os, v.data()[i]);
+		size_t wv = vocabs.get(p.first);
+		if (wv == (size_t)-1) return {};
+		if (counts(p.second, wv) < min_count) return {};
+		vec += inNormalized.col(wv * T + p.second);
+		uniqs.emplace(wv * T + p.second);
 	}
+
+	for (auto& p : negativeWords)
+	{
+		size_t wv = vocabs.get(p.first);
+		if (wv == (size_t)-1) return {};
+		if (counts(p.second, wv) < min_count) return {};
+		vec -= inNormalized.col(wv * T + p.second);
+		uniqs.emplace(wv * T + p.second);
+	}
+
+	vec.normalize();
+
+	vector<tuple<string, size_t, float>> top;
+	MatrixXf sim(T, V);
+	for (size_t v = 0; v < V; ++v)
+	{
+		for (size_t s = 0; s < T; ++s)
+		{
+			if (uniqs.count(v * T + s) || counts(s, v) < min_count)
+			{
+				sim(s, v) = -INFINITY;
+				continue;
+			}
+			sim(s, v) = inNormalized.col(v * T + s).dot(vec);
+		}
+	}
+
+	for (size_t k = 0; k < K; ++k)
+	{
+		size_t idx = max_element(sim.data(), sim.data() + sim.size()) - sim.data();
+		top.emplace_back(vocabs.getStr(idx / T), idx % T, sim.data()[idx]);
+		sim.data()[idx] = -INFINITY;
+	}
+	return top;
 }
 
-template<class _Ty1, size_t _Rows, size_t _Cols>
-inline void readFromBinStream(std::istream& is, Matrix<_Ty1, _Rows, _Cols>& v)
-{
-	for (size_t i = 0; i < v.size(); ++i)
-	{
-		readFromBinStream(is, v.data()[i]);
-	}
-}
-
-void AdaGramModel::saveModel(std::ostream & os) const
+void AdaGramModel::saveModel(ostream & os) const
 {
 	writeToBinStream(os, (uint32_t)M);
 	writeToBinStream(os, (uint32_t)T);
@@ -625,7 +656,7 @@ void AdaGramModel::saveModel(std::ostream & os) const
 	writeToBinStream(os, path);
 }
 
-AdaGramModel AdaGramModel::loadModel(std::istream & is)
+AdaGramModel AdaGramModel::loadModel(istream & is)
 {
 	size_t M = readFromBinStream<uint32_t>(is);
 	size_t T = readFromBinStream<uint32_t>(is);

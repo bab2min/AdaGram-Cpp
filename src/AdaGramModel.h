@@ -153,6 +153,10 @@ public:
 		size_t K = 10, float min_count = 1.f) const;
 	std::vector<float> disambiguate(const std::string& word, const std::vector<std::string>& context,
 		bool use_prior = true, float min_prob = 1e-3) const;
+	std::vector<std::tuple<std::string, size_t, float>> mostSimilar(
+		const std::vector<std::pair<std::string, size_t>>& positiveWords,
+		const std::vector<std::pair<std::string, size_t>>& negativeWords,
+		size_t K = 10, float min_count = 1.f) const;
 
 	const std::vector<std::string>& getVocabs() const
 	{

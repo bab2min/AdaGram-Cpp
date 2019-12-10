@@ -17,33 +17,40 @@
 
 using namespace std;
 
-bool posSelect(const string& o)
+struct KoreanStopwordFilter
 {
-	if (o.find("/NN") != string::npos) return true;
-	if (o.find("/VA") != string::npos) return true;
-	if (o.find("/VV") != string::npos) return true;
-	if (o.find("/MM") != string::npos) return true;
-	if (o.find("/MAG") != string::npos) return true;
-	if (o.find("/XR") != string::npos) return true;
-	if (o.find("/SL") != string::npos) return true;
-	return false;
-}
+	bool operator()(const string& o)
+	{
+		if (o.find("/NN") != string::npos) return true;
+		if (o.find("/VA") != string::npos) return true;
+		if (o.find("/VV") != string::npos) return true;
+		if (o.find("/MM") != string::npos) return true;
+		if (o.find("/MAG") != string::npos) return true;
+		if (o.find("/XR") != string::npos) return true;
+		if (o.find("/SL") != string::npos) return true;
+		return false;
+	}
+};
 
-string unifyNoun(const string& o)
+struct KoreanTagTransformer
 {
-	if (o.find("/NN") != string::npos) return o.substr(0, o.size() - 1);
-	return o;
-}
+	string operator()(const string& o)
+	{
+		if (o.find("/NN") != string::npos) return o.substr(0, o.size() - 1);
+		return o;
+	}
+};
 
 
 int main()
 {
-	AdaGramModel agm{ 300, 5, .05f, 0, 1e-4 };
-	if (0)
+	ag::AdaGramModel<ag::Mode::hierarchical_softmax> agm{ 300, 5, .05f, 0, 1e-4 };
+	if (1)
 	{
 		Timer timer;
-		ifstream ifs{ "D:/namu_tagged.txt" };
-		agm.buildTrain(ifs, 10, posSelect, unifyNoun, 1, 5, 0.025, 100000, 1);
+		//auto gen = ag::util::FileLineReader<KoreanStopwordFilter, KoreanTagTransformer>::generator("G:/namu_tagged.txt");
+		auto gen = ag::util::BasicLineReader::generator("data/enwiki3000.txt");
+		agm.buildTrain(gen, 10, 1, 5, 0.025, 0.00025, 1000000, 1);
 		cout << "Finished in " << timer.getElapsed() << " sec" << endl;
 		ofstream ofs{ "namu_subsampling.mdl", ios_base::binary };
 		agm.saveModel(ofs);
@@ -51,7 +58,7 @@ int main()
 	else
 	{
 		ifstream ifs{ "namu_subsampling.mdl", ios_base::binary };
-		agm = AdaGramModel::loadModel(ifs);
+		agm.loadModel(ifs);
 
 		/*
 		ofstream ofs{ "namuTest_subsampling.txt" };

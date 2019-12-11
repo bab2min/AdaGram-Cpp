@@ -372,7 +372,8 @@ void AdaGramBase<_Derived>::buildVocab(const std::function<DataReader()>& reader
 
 template<typename _Derived>
 void AdaGramBase<_Derived>::train(const function<DataReader()>& reader, 
-	size_t num_workers, size_t window_length, float start_lr, float end_lr, size_t batch, size_t epoch)
+	size_t num_workers, size_t window_length, float start_lr, float end_lr, 
+	size_t batch, size_t epoch, size_t report)
 {
 	if (!num_workers) num_workers = thread::hardware_concurrency();
 	ThreadPool workers{ num_workers };
@@ -385,6 +386,8 @@ void AdaGramBase<_Derived>::train(const function<DataReader()>& reader,
 			l.rg = mt19937_64{ globalData.rg() };
 		}
 	}
+	double avg_ll = 0, avg_senses = 0;
+	size_t ll_cnt = 0, max_senses = 0;
 	vector<vector<uint32_t>> collections;
 	totalLL = 0;
 	totalLLCnt = 0;
@@ -417,7 +420,18 @@ void AdaGramBase<_Derived>::train(const function<DataReader()>& reader,
 			{
 				Report result = trainVectors(d.data(), d.size(), window_length, lr, lr, globalData);
 				procWords += result.proc_words;
-				fprintf(stderr, "ll:%4.4f, avg_senses:%3.3f, max_senses:%zd\n", result.ll, result.avg_senses, result.max_senses);
+				ll_cnt += result.proc_words;
+				avg_ll += (result.ll - avg_ll) * result.proc_words / ll_cnt;
+				avg_senses += (result.avg_senses - avg_senses) * result.proc_words / ll_cnt;
+				max_senses = max(max_senses, result.max_senses);
+				if(report && (procWords - result.proc_words) / report < procWords / report)
+				{
+					fprintf(stderr, "ll:%4.4f, avg_senses:%3.3f, max_senses:%zd\n", avg_ll, avg_senses, max_senses);
+					ll_cnt = 0;
+					avg_ll = 0;
+					avg_senses = 0;
+					max_senses = 0;
+				}
 			}
 		}
 		collections.clear();
@@ -645,7 +659,7 @@ void AdaGramBase<_Derived>::loadModel(istream & is)
 	updateNormalizedVector();
 }
 
-template class AdaGramBase<AdaGramModel<Mode::hierarchical_softmax>>;
-template class AdaGramBase<AdaGramModel<Mode::negative_sampling>>;
-template class AdaGramModel<Mode::hierarchical_softmax>;
-template class AdaGramModel<Mode::negative_sampling>;
+template class ag::AdaGramBase<AdaGramModel<Mode::hierarchical_softmax>>;
+template class ag::AdaGramBase<AdaGramModel<Mode::negative_sampling>>;
+template class ag::AdaGramModel<Mode::hierarchical_softmax>;
+template class ag::AdaGramModel<Mode::negative_sampling>;

@@ -274,3 +274,4 @@ __pycache__/
 /namuTest_subsampling.txt
 /enwikiTest_subsampling.txt
 /AdaGramCpp
+build/

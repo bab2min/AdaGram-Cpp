@@ -163,7 +163,8 @@ namespace ag
 		void buildVocab(const std::function<DataReader()>& reader, size_t min_cnt = 10);
 
 		void train(const std::function<DataReader()>& reader, size_t num_workers = 0,
-			size_t window_length = 4, float start_lr = 0.025, float end_lr = 0.00025, size_t batch_sents = 1000, size_t epochs = 1);
+			size_t window_length = 4, float start_lr = 0.025, float end_lr = 0.00025, 
+			size_t batch_sents = 1000, size_t epochs = 1, size_t report = 100000);
 
 		void buildTrain(const std::function<DataReader()>& reader, size_t minCnt = 10,
 			size_t num_workers = 0, size_t window_length = 4, float start_lr = 0.025, float end_lr = 0.00025, size_t batch_sents = 1000, size_t epochs = 1);

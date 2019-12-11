@@ -44,7 +44,7 @@ namespace ag
 			}
 		};
 
-		template<typename _Filter, typename _Transformer>
+		template<typename _Filter, typename _Transformer = NoTransform>
 		class FileLineReader
 		{
 			std::vector<std::string> files;
@@ -137,11 +137,6 @@ namespace ag
 		float sense_threshold = 1e-10;
 		bool context_cut = true;
 
-		size_t totalWords = 0;
-		size_t procWords = 0, lastProcWords = 0;
-		size_t totalLLCnt = 0;
-		double totalLL = 0;
-
 		ThreadLocalData globalData;
 		WordDictionary<> vocabs;
 
@@ -149,7 +144,7 @@ namespace ag
 		std::pair<Eigen::VectorXf, size_t> getExpectedLogPi(size_t v) const;
 		std::pair<Eigen::VectorXf, size_t> getExpectedPi(size_t v) const;
 		void buildModel();
-		Report trainVectors(const uint32_t* ws, size_t N, size_t window_length, float start_lr, float end_lr, ThreadLocalData& ld, size_t threadId = 0);
+		Report trainVectors(const uint32_t* ws, size_t len, size_t window_length, float start_lr, float end_lr, ThreadLocalData& ld, size_t threadId = 0);
 		void updateNormalizedVector();
 	public:
 
@@ -166,8 +161,9 @@ namespace ag
 			size_t window_length = 4, float start_lr = 0.025, float end_lr = 0.00025, 
 			size_t batch_sents = 1000, size_t epochs = 1, size_t report = 100000);
 
-		void buildTrain(const std::function<DataReader()>& reader, size_t minCnt = 10,
-			size_t num_workers = 0, size_t window_length = 4, float start_lr = 0.025, float end_lr = 0.00025, size_t batch_sents = 1000, size_t epochs = 1);
+		void buildTrain(const std::function<DataReader()>& reader, size_t min_cnt = 10,
+			size_t num_workers = 0, size_t window_length = 4, float start_lr = 0.025, float end_lr = 0.00025, 
+			size_t batch_sents = 1000, size_t epochs = 1);
 
 		std::pair<Eigen::VectorXf, size_t> getExpectedPi(const std::string& word) const;
 
@@ -178,8 +174,8 @@ namespace ag
 			bool use_prior = true, float min_prob = 1e-3) const;
 
 		std::vector<std::tuple<std::string, size_t, float>> mostSimilar(
-			const std::vector<std::pair<std::string, size_t>>& positiveWords,
-			const std::vector<std::pair<std::string, size_t>>& negativeWords,
+			const std::vector<std::pair<std::string, size_t>>& positive_words,
+			const std::vector<std::pair<std::string, size_t>>& negative_words,
 			size_t K = 10, float min_count = 1.f) const;
 
 		const std::vector<std::string>& getVocabs() const

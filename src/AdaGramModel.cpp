@@ -26,7 +26,7 @@ struct HSoftmaxNode
 		{
 			const auto& node = nodes[id];
 			assert(node.parent >= V);
-			ret.emplace_back(node.parent - V, node.branch ? 1 : -1);
+			ret.emplace_back(2 * V - 2 - node.parent, node.branch ? 1 : -1);
 			id = node.parent;
 		}
 		return ret;
@@ -361,11 +361,20 @@ void AdaGramBase<_Derived>::buildVocab(const std::function<DataReader()>& reader
 		}
 	}
 
+	vector<pair<size_t, string>> pair_to_sort;
+
 	for (size_t i = 0; i < rdict.size(); ++i)
 	{
 		if (rfreqs[i] < min_cnt) continue;
-		frequencies.emplace_back(rfreqs[i]);
-		vocabs.add(rdict.getStr(i));
+		pair_to_sort.emplace_back(rfreqs[i], rdict.getStr(i));
+	}
+
+	sort(pair_to_sort.rbegin(), pair_to_sort.rend());
+
+	for (auto& p : pair_to_sort)
+	{
+		frequencies.emplace_back(p.first);
+		vocabs.add(p.second);
 	}
 	buildModel();
 }
@@ -387,47 +396,69 @@ void AdaGramBase<_Derived>::train(const function<DataReader()>& reader,
 		}
 	}
 	double avg_ll = 0, avg_senses = 0;
-	size_t ll_cnt = 0, max_senses = 0;
-	vector<vector<uint32_t>> collections;
-	totalLL = 0;
-	totalLLCnt = 0;
 	size_t totW = accumulate(frequencies.begin(), frequencies.end(), 0);
-	procWords = lastProcWords = 0;
-	// estimate total size
-	totalWords = epoch * totW;
-	size_t read = 0;
+	size_t total_word_cnt = epoch * totW;
+	size_t proc_word_cnt = 0, report_word_cnt = 0, max_senses = 0, skip_cnt = 0;
+	vector<vector<uint32_t>> collections;
+
 	const auto& procCollection = [&]()
 	{
 		if (collections.empty()) return;
 		shuffle(collections.begin(), collections.end(), globalData.rg);
-		float lr = start_lr + (end_lr - start_lr) * procWords / totalWords;
+		float lr = start_lr + (end_lr - start_lr) * proc_word_cnt / total_word_cnt;
 		if (num_workers > 1)
 		{
-			vector<future<void>> futures;
+			vector<future<Report>> futures;
 			futures.reserve(collections.size());
 			for (auto& d : collections)
 			{
 				futures.emplace_back(workers.enqueue([=, &d, &ld](size_t threadId)
 				{
-					trainVectors(d.data(), d.size(), window_length, lr, lr, ld[threadId], threadId);
+					return trainVectors(d.data(), d.size(), window_length, lr, lr, ld[threadId], threadId);
 				}));
 			}
-			for (auto& f : futures) f.get();
+			size_t collection_cnt = 0;
+			for (auto& f : futures)
+			{
+				size_t bf = proc_word_cnt;
+				Report result = f.get();
+				collection_cnt++;
+				proc_word_cnt += result.proc_words
+					+ skip_cnt * collection_cnt / collections.size() - skip_cnt * (collection_cnt - 1) / collections.size();
+				report_word_cnt += result.proc_words;
+				avg_ll += (result.ll - avg_ll) * result.proc_words / report_word_cnt;
+				avg_senses += (result.avg_senses - avg_senses) * result.proc_words / report_word_cnt;
+				max_senses = max(max_senses, result.max_senses);
+				if (report && bf / report < proc_word_cnt / report)
+				{
+					fprintf(stderr, "%.2f%% ll:%4.4f, avg_senses:%3.3f, max_senses:%zd\n",
+						100.f * proc_word_cnt / total_word_cnt, avg_ll, avg_senses, max_senses);
+					report_word_cnt = 0;
+					avg_ll = 0;
+					avg_senses = 0;
+					max_senses = 0;
+				}
+			}
 		}
 		else
 		{
+			size_t collection_cnt = 0;
 			for (auto& d : collections)
 			{
+				size_t bf = proc_word_cnt;
 				Report result = trainVectors(d.data(), d.size(), window_length, lr, lr, globalData);
-				procWords += result.proc_words;
-				ll_cnt += result.proc_words;
-				avg_ll += (result.ll - avg_ll) * result.proc_words / ll_cnt;
-				avg_senses += (result.avg_senses - avg_senses) * result.proc_words / ll_cnt;
+				collection_cnt++;
+				proc_word_cnt += result.proc_words
+					+ skip_cnt * collection_cnt / collections.size() - skip_cnt * (collection_cnt - 1) / collections.size();
+				report_word_cnt += result.proc_words;
+				avg_ll += (result.ll - avg_ll) * result.proc_words / report_word_cnt;
+				avg_senses += (result.avg_senses - avg_senses) * result.proc_words / report_word_cnt;
 				max_senses = max(max_senses, result.max_senses);
-				if(report && (procWords - result.proc_words) / report < procWords / report)
+				if(report && bf / report < proc_word_cnt / report)
 				{
-					fprintf(stderr, "ll:%4.4f, avg_senses:%3.3f, max_senses:%zd\n", avg_ll, avg_senses, max_senses);
-					ll_cnt = 0;
+					fprintf(stderr, "%.2f%% ll:%4.4f, avg_senses:%3.3f, max_senses:%zd\n", 
+						100.f * proc_word_cnt / total_word_cnt, avg_ll, avg_senses, max_senses);
+					report_word_cnt = 0;
 					avg_ll = 0;
 					avg_senses = 0;
 					max_senses = 0;
@@ -435,6 +466,7 @@ void AdaGramBase<_Derived>::train(const function<DataReader()>& reader,
 			}
 		}
 		collections.clear();
+		skip_cnt = 0;
 	};
 
 	for (size_t e = 0; e < epoch; ++e)
@@ -455,15 +487,15 @@ void AdaGramBase<_Derived>::train(const function<DataReader()>& reader,
 				if (subsampling > 0 &&
 					generate_canonical<float, 24>(globalData.rg) > sqrt(ww) + ww)
 				{
-					procWords += 1;
+					skip_cnt += 1;
 					continue;
 				}
 				doc.emplace_back(id);
 			}
 
-			if (doc.size() < 3)
+			if (doc.size() < 2)
 			{
-				procWords += doc.size();
+				skip_cnt += doc.size();
 				continue;
 			}
 

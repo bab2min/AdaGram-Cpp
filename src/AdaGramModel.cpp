@@ -78,7 +78,7 @@ pair<VectorXf, size_t> AdaGramBase<_Derived, _ThreadLocalData>::getExpectedPi(si
 template<typename _Derived, typename _ThreadLocalData>
 void AdaGramBase<_Derived, _ThreadLocalData>::updateCounts(size_t x, const VectorXf & localCounts, float lr)
 {
-	counts.col(x) += lr * (localCounts * frequencies[x] - counts.col(x).eval());
+	counts.col(x) += lr * (localCounts * frequencies[x] - counts.col(x));
 }
 
 inline void softmax_inplace(VectorXf& z)
@@ -121,11 +121,12 @@ auto AdaGramBase<_Derived, _ThreadLocalData>::trainVectors(const uint32_t * ws,
 		ret.avg_senses += t.second;
 		ret.max_senses = max(ret.max_senses, t.second);
 
+		MatrixXf fs(T * static_cast<_Derived*>(this)->getFWidth(), jEnd - jBegin + 1);
 		for (auto j = jBegin; j <= jEnd; ++j)
 		{
 			if (i == j) continue;
-			if(_multi) static_cast<_Derived*>(this)->allocateCache(ld, ws[j], num_workers);
-			static_cast<_Derived*>(this)->updateZ(x, ws[j], z);
+			if (_multi) static_cast<_Derived*>(this)->allocateCache(ld, ws[j], num_workers);
+			static_cast<_Derived*>(this)->updateZ(x, ws[j], z, fs.col(j - jBegin).data());
 			assert(isnormal(z[0]));
 		}
 
@@ -136,8 +137,8 @@ auto AdaGramBase<_Derived, _ThreadLocalData>::trainVectors(const uint32_t * ws,
 		{
 			if (i == j) continue;
 			float ll;
-			if(_multi) ll = static_cast<_Derived*>(this)->update(x, ws[j], z, lr, ld);
-			else ll = static_cast<_Derived*>(this)->inplaceUpdate(x, ws[j], z, lr);
+			if(_multi) ll = static_cast<_Derived*>(this)->update(x, ws[j], z, fs.col(j - jBegin).data(), lr, ld);
+			else ll = static_cast<_Derived*>(this)->inplaceUpdate(x, ws[j], z, fs.col(j - jBegin).data(), lr);
 			assert(isnormal(ll));
 			ll_cnt++;
 			ret.ll += (ll - ret.ll) / ll_cnt;
@@ -154,7 +155,7 @@ auto AdaGramBase<_Derived, _ThreadLocalData>::trainVectors(const uint32_t * ws,
 
 			for(size_t hash : ld.update_out_idx_hash)
 			{
-				lock_guard<mutex> lock{mtx_out[x % num_workers]};
+				lock_guard<mutex> lock{mtx_out[hash]};
 				for(auto& p : ld.update_out_idx)
 				{
 					if(p.first % num_workers != hash) continue;
@@ -256,7 +257,6 @@ void AdaGramBase<_Derived, _ThreadLocalData>::train(const function<DataReader()>
 	{
 		if (collections.empty()) return;
 		shuffle(collections.begin(), collections.end(), globalData.rg);
-		float lr = start_lr + (end_lr - start_lr) * proc_word_cnt / total_word_cnt;
 		if (num_workers > 1)
 		{
 			vector<future<Report>> futures;
@@ -298,7 +298,7 @@ void AdaGramBase<_Derived, _ThreadLocalData>::train(const function<DataReader()>
 			for (auto& d : collections)
 			{
 				size_t bf = proc_word_cnt;
-				Report result = trainVectors<false>(d.data(), d.size(), window_length, lr, lr, globalData,
+				Report result = trainVectors<false>(d.data(), d.size(), window_length, getLR(), getLR(), globalData,
 					1, nullptr, nullptr);
 				collection_cnt++;
 				proc_word_cnt += result.proc_words
@@ -436,7 +436,7 @@ vector<float> AdaGramBase<_Derived, _ThreadLocalData>::disambiguate(const string
 	{
 		size_t yId = vocabs.get(y);
 		if (yId == (size_t)-1) continue;
-		static_cast<const _Derived*>(this)->updateZ(wv, yId, z);
+		static_cast<const _Derived*>(this)->updateZ(wv, yId, z, nullptr);
 	}
 
 	softmax_inplace(z);
@@ -568,13 +568,13 @@ struct HSoftmaxNode
 auto AdaGramModel<Mode::hierarchical_softmax>::buildHuffmanTree() const 
 	-> vector<HuffmanResult>
 {
-	auto V = this->vocabs.size();
+	auto V = vocabs.size();
 	auto nodes = vector<HSoftmaxNode>(V);
 	vector<pair<size_t, size_t>> heap;
 
 	for (size_t i = 0; i < V; ++i)
 	{
-		heap.emplace_back(i, this->frequencies[i]);
+		heap.emplace_back(i, frequencies[i]);
 	}
 	size_t heapSize = V;
 
@@ -626,7 +626,7 @@ auto AdaGramModel<Mode::hierarchical_softmax>::buildHuffmanTree() const
 
 void AdaGramModel<Mode::hierarchical_softmax>::_buildModel()
 {
-	const size_t V = this->vocabs.size();
+	const size_t V = vocabs.size();
 
 	auto outputs = buildHuffmanTree();
 	size_t max_length = max_element(outputs.begin(), outputs.end(), [](const HuffmanResult& a, const HuffmanResult& b)
@@ -644,38 +644,38 @@ void AdaGramModel<Mode::hierarchical_softmax>::_buildModel()
 }
 
 
-void AdaGramModel<Mode::hierarchical_softmax>::updateZ(size_t x, size_t y, VectorXf & z) const
+void AdaGramModel<Mode::hierarchical_softmax>::updateZ(size_t x, size_t y, VectorXf & z, float* f) const
 {
 	for (int n = 0; n < code.rows() && code(n, y); ++n)
 	{
-		auto ocol = this->out.col(path(n, y));
-		for (int k = 0; k < this->T; ++k)
+		auto ocol = out.col(path(n, y));
+		for (int k = 0; k < T; ++k)
 		{
-			float f = this->in.col(x * this->T + k).dot(ocol);
-			z[k] += logsigmoid(f * code(n, y));
+			float dot = in.col(x * T + k).dot(ocol);
+			if(f) f[n * T + k] = dot;
+			z[k] += logsigmoid(dot * code(n, y));
 		}
 	}
 }
 
-float AdaGramModel<Mode::hierarchical_softmax>::inplaceUpdate(size_t x, size_t y, const VectorXf& z, float lr)
+float AdaGramModel<Mode::hierarchical_softmax>::inplaceUpdate(size_t x, size_t y, const VectorXf& z, const float* f, float lr)
 {
-	MatrixXf in_grad = MatrixXf::Zero(this->M, this->T);
-	VectorXf out_grad = VectorXf::Zero(this->M);
+	MatrixXf in_grad = MatrixXf::Zero(M, T);
+	VectorXf out_grad = VectorXf::Zero(M);
 
 	float pr = 0;
 	for (int n = 0; n < code.rows() && code(n, y); ++n)
 	{
-		auto outcol = this->out.col(path(n, y));
+		auto outcol = out.col(path(n, y));
 		out_grad.setZero();
 
-		for (int k = 0; k < this->T; ++k)
+		for (int k = 0; k < T; ++k)
 		{
-			if (z[k] < this->sense_threshold) continue;
-			auto incol = this->in.col(x * T + k);
-			float f = incol.dot(outcol);
-			pr += z[k] * logsigmoid(f * code(n, y));
+			if (z[k] < sense_threshold) continue;
+			auto incol = in.col(x * T + k);
+			pr += z[k] * logsigmoid(f[n * T + k] * code(n, y));
 
-			float d = (1 + code(n, y)) / 2 - sigmoid(f);
+			float d = (1 + code(n, y)) / 2 - sigmoid(f[n * T + k]);
 			float g = z[k] * lr * d;
 
 			in_grad.col(k) += g * outcol;
@@ -687,14 +687,14 @@ float AdaGramModel<Mode::hierarchical_softmax>::inplaceUpdate(size_t x, size_t y
 	for (int k = 0; k < T; ++k)
 	{
 		if (z[k] < sense_threshold) continue;
-		auto incol = this->in.col(x * T + k);
+		auto incol = in.col(x * T + k);
 		incol += in_grad.col(k);
 	}
 	return pr;
 }
 
 
-float AdaGramModel<Mode::hierarchical_softmax>::update(size_t x, size_t y, const VectorXf& z, float lr, ThreadLocalData& ld) const
+float AdaGramModel<Mode::hierarchical_softmax>::update(size_t x, size_t y, const VectorXf& z, const float* f, float lr, ThreadLocalData& ld) const
 {
 	float pr = 0;
 	for (int n = 0; n < code.rows() && code(n, y); ++n)
@@ -706,10 +706,9 @@ float AdaGramModel<Mode::hierarchical_softmax>::update(size_t x, size_t y, const
 		{
 			if (z[k] < sense_threshold) continue;
 			auto incol = in.col(x * T + k);
-			float f = incol.dot(outcol);
-			pr += z[k] * logsigmoid(f * code(n, y));
+			pr += z[k] * logsigmoid(f[n * T + k] * code(n, y));
 
-			float d = (1 + code(n, y)) / 2 - sigmoid(f);
+			float d = (1 + code(n, y)) / 2 - sigmoid(f[n * T + k]);
 			float g = z[k] * lr * d;
 
 			ld.update_in.col(k) += g * outcol;
@@ -718,6 +717,11 @@ float AdaGramModel<Mode::hierarchical_softmax>::update(size_t x, size_t y, const
 	}
 
 	return pr;
+}
+
+size_t AdaGramModel<Mode::hierarchical_softmax>::getFWidth() const
+{
+	return code.rows();
 }
 
 void AdaGramModel<Mode::hierarchical_softmax>::initSharedForMulti(ThreadLocalData& ld, size_t window_length) const
@@ -746,7 +750,7 @@ void AdaGramModel<Mode::negative_sampling>::_buildModel()
 	unigramTable = discrete_distribution<uint32_t>(weights.begin(), weights.end());
 }
 
-void AdaGramModel<Mode::negative_sampling>::updateZ(size_t x, size_t y, VectorXf & z, bool negative) const
+void AdaGramModel<Mode::negative_sampling>::updateZ(size_t x, size_t y, VectorXf & z, float* f, bool negative) const
 {
 	for (int k = 0; k < T; ++k)
 	{
@@ -755,7 +759,7 @@ void AdaGramModel<Mode::negative_sampling>::updateZ(size_t x, size_t y, VectorXf
 	}
 }
 
-float AdaGramModel<Mode::negative_sampling>::inplaceUpdate(size_t x, size_t y, const VectorXf & z, float lr, bool negative)
+float AdaGramModel<Mode::negative_sampling>::inplaceUpdate(size_t x, size_t y, const VectorXf & z, const float* f, float lr, bool negative)
 {
 	MatrixXf in_grad = MatrixXf::Zero(M, T);
 	VectorXf out_grad = VectorXf::Zero(M);
@@ -785,10 +789,16 @@ float AdaGramModel<Mode::negative_sampling>::inplaceUpdate(size_t x, size_t y, c
 	return pr;
 }
 
-float AdaGramModel<Mode::negative_sampling>::update(size_t x, size_t y, const VectorXf& z, float lr, ThreadLocalData& ld, bool negative) const
+float AdaGramModel<Mode::negative_sampling>::update(size_t x, size_t y, const VectorXf& z, const float* f, float lr, ThreadLocalData& ld, bool negative) const
 {
-
+	return 0;
 }
+
+size_t AdaGramModel<Mode::negative_sampling>::getFWidth() const
+{
+	return 0;
+}
+
 
 void AdaGramModel<Mode::negative_sampling>::initSharedForMulti(ThreadLocalData& ld, size_t window_length) const
 {

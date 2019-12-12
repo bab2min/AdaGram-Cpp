@@ -218,12 +218,13 @@ namespace ag
 		Eigen::Matrix<uint32_t, Eigen::Dynamic, Eigen::Dynamic> path; // (MAX_CODELENGTH, V)
 
 		void _buildModel();
-		void updateZ(size_t x, size_t y, Eigen::VectorXf& z) const;
-		float inplaceUpdate(size_t x, size_t y, const Eigen::VectorXf& z, float lr);
+		void updateZ(size_t x, size_t y, Eigen::VectorXf& z, float* f) const;
+		float inplaceUpdate(size_t x, size_t y, const Eigen::VectorXf& z, const float* f, float lr);
 
 		void initSharedForMulti(ThreadLocalData& ld, size_t window_length) const;
 		void allocateCache(ThreadLocalData& ld, size_t y, size_t num_workers) const;
-		float update(size_t x, size_t y, const Eigen::VectorXf& z, float lr, ThreadLocalData& data) const;
+		float update(size_t x, size_t y, const Eigen::VectorXf& z, const float* f, float lr, ThreadLocalData& data) const;
+		size_t getFWidth() const;
 	public:
 		using AdaGramBase<AdaGramModel<Mode::hierarchical_softmax>, ThreadLocalBase>::AdaGramBase;
 	};
@@ -240,12 +241,13 @@ namespace ag
 		size_t negativeSampleSize = 0;
 
 		void _buildModel();
-		void updateZ(size_t x, size_t y, Eigen::VectorXf& z, bool negative = false) const;
-		float inplaceUpdate(size_t x, size_t y, const Eigen::VectorXf& z, float lr, bool negative = false);
+		void updateZ(size_t x, size_t y, Eigen::VectorXf& z, float* f, bool negative = false) const;
+		float inplaceUpdate(size_t x, size_t y, const Eigen::VectorXf& z, const float* f, float lr, bool negative = false);
 
 		void initSharedForMulti(ThreadLocalData& ld, size_t window_length) const;
 		void allocateCache(ThreadLocalData& ld, size_t y, size_t num_workers) const;
-		float update(size_t x, size_t y, const Eigen::VectorXf& z, float lr, ThreadLocalData& data, bool negative = false) const;
+		float update(size_t x, size_t y, const Eigen::VectorXf& z, const float* f, float lr, ThreadLocalData& data, bool negative = false) const;
+		size_t getFWidth() const;
 	public:
 		using AdaGramBase<AdaGramModel<Mode::negative_sampling>, ThreadLocalBase>::AdaGramBase;
 	};

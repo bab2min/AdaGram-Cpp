@@ -57,8 +57,8 @@ int main()
 	{
 		Timer timer;
 		//auto gen = ag::util::FileLineReader<KoreanStopwordFilter, KoreanTagTransformer>::generator("G:/namu_tagged.txt");
-		auto gen = ag::util::FileLineReader<PuncFilter>::generator("data/enwiki10000.txt");
-		agm.buildTrain(gen, 10, 8, 5, 0.025, 0.00025, 100000, 2);
+		auto gen = ag::util::FileLineReader<PuncFilter>::generator("data/20_news.r.txt");
+		agm.buildTrain(gen, 10, 1, 5, 0.025, 0.00025, 100000, 10);
 		cout << "Finished in " << timer.getElapsed() << " sec" << endl;
 		ofstream ofs{ "namu_subsampling.mdl", ios_base::binary };
 		agm.saveModel(ofs);

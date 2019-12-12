@@ -13,88 +13,9 @@ using namespace std;
 using namespace Eigen;
 using namespace ag;
 
-struct HSoftmaxNode
-{
-	uint32_t parent = -1;
-	bool branch = false;
 
-	static vector<pair<int32_t, int8_t>> softmax_path(
-		const vector<HSoftmaxNode>& nodes, size_t V, size_t id)
-	{
-		vector<pair<int32_t, int8_t>> ret;
-		while (nodes[id].parent != (uint32_t)-1)
-		{
-			const auto& node = nodes[id];
-			assert(node.parent >= V);
-			ret.emplace_back(2 * V - 2 - node.parent, node.branch ? 1 : -1);
-			id = node.parent;
-		}
-		return ret;
-	}
-};
-
-
-auto AdaGramModel<Mode::hierarchical_softmax>::buildHuffmanTree() const 
-	-> vector<HuffmanResult>
-{
-	auto V = vocabs.size();
-	auto nodes = vector<HSoftmaxNode>(V);
-	vector<pair<size_t, size_t>> heap;
-
-	for (size_t i = 0; i < V; ++i)
-	{
-		heap.emplace_back(i, frequencies[i]);
-	}
-	size_t heapSize = V;
-
-	const auto& freq_cmp = [](const pair<size_t, size_t>& a, const pair<size_t, size_t>& b)
-	{
-		return a.second > b.second;
-	};
-	make_heap(heap.begin(), heap.end(), freq_cmp);
-
-	size_t L = V;
-	while (heapSize > 1)
-	{
-		nodes.emplace_back();
-		size_t freq = 0;
-
-		pop_heap(heap.begin(), heap.begin() + heapSize, freq_cmp);
-		heapSize--;
-		nodes[heap[heapSize].first].parent = L;
-		nodes[heap[heapSize].first].branch = true;
-		freq += heap[heapSize].second;
-
-		pop_heap(heap.begin(), heap.begin() + heapSize, freq_cmp);
-		heapSize--;
-		nodes[heap[heapSize].first].parent = L;
-		nodes[heap[heapSize].first].branch = false;
-		freq += heap[heapSize].second;
-
-		heap[heapSize] = { nodes.size() - 1, freq };
-		heapSize++;
-		push_heap(heap.begin(), heap.begin() + heapSize, freq_cmp);
-		L++;
-	}
-
-
-	auto outputs = vector<HuffmanResult>(V);
-	for (auto v = 0; v < V; ++v)
-	{
-		vector<int8_t> code;
-		vector<uint32_t> path;
-		for (auto& p : HSoftmaxNode::softmax_path(nodes, V, v))
-		{
-			code.emplace_back(p.second);
-			path.emplace_back(p.first);
-		}
-		outputs[v] = HuffmanResult{ code, path };
-	}
-	return outputs;
-}
-
-template<typename _Derived>
-void AdaGramBase<_Derived>::buildModel()
+template<typename _Derived, typename _ThreadLocalData>
+void AdaGramBase<_Derived, _ThreadLocalData>::buildModel()
 {
 	const size_t V = vocabs.size();
 	// allocate & initialize model
@@ -106,34 +27,9 @@ void AdaGramBase<_Derived>::buildModel()
 	static_cast<_Derived*>(this)->_buildModel();
 }
 
-void AdaGramModel<Mode::hierarchical_softmax>::_buildModel()
-{
-	const size_t V = vocabs.size();
 
-	auto outputs = buildHuffmanTree();
-	size_t max_length = max_element(outputs.begin(), outputs.end(), [](const HuffmanResult& a, const HuffmanResult& b)
-	{
-		return a.code.size() < b.code.size();
-	})->code.size();
-	path = Matrix<uint32_t, Dynamic, Dynamic>::Zero(max_length, V);
-	code = Matrix<int8_t, Dynamic, Dynamic>::Zero(max_length, V);
-
-	for (size_t v = 0; v < V; ++v)
-	{
-		copy(outputs[v].code.begin(), outputs[v].code.end(), code.col(v).data());
-		copy(outputs[v].path.begin(), outputs[v].path.end(), path.col(v).data());
-	}
-}
-
-void AdaGramModel<Mode::negative_sampling>::_buildModel()
-{
-	vector<double> weights;
-	transform(frequencies.begin(), frequencies.end(), back_inserter(weights), [](auto w) { return pow(w, 0.75); });
-	unigramTable = discrete_distribution<uint32_t>(weights.begin(), weights.end());
-}
-
-template<typename _Derived>
-pair<VectorXf, size_t> AdaGramBase<_Derived>::getExpectedLogPi(size_t v) const
+template<typename _Derived, typename _ThreadLocalData>
+pair<VectorXf, size_t> AdaGramBase<_Derived, _ThreadLocalData>::getExpectedLogPi(size_t v) const
 {
 	float vAlpha = alpha; // *pow(log(frequencies[v]), alphaFreqWeight);
 	VectorXf pi = counts.col(v);
@@ -157,8 +53,8 @@ pair<VectorXf, size_t> AdaGramBase<_Derived>::getExpectedLogPi(size_t v) const
 
 }
 
-template<typename _Derived>
-pair<VectorXf, size_t> AdaGramBase<_Derived>::getExpectedPi(size_t v) const
+template<typename _Derived, typename _ThreadLocalData>
+pair<VectorXf, size_t> AdaGramBase<_Derived, _ThreadLocalData>::getExpectedPi(size_t v) const
 {
 	float vAlpha = alpha; // *pow(log(frequencies[v]), alphaFreqWeight);
 	VectorXf pi(T);
@@ -178,96 +74,9 @@ pair<VectorXf, size_t> AdaGramBase<_Derived>::getExpectedPi(size_t v) const
 	return make_pair(move(pi), senses);
 }
 
-void AdaGramModel<Mode::hierarchical_softmax>::updateZ(VectorXf & z, size_t x, size_t y) const
-{
-	for (int n = 0; n < code.rows() && code(n, y); ++n)
-	{
-		auto ocol = out.col(path(n, y));
-		for (int k = 0; k < T; ++k)
-		{
-			float f = in.col(x * T + k).dot(ocol);
-			z[k] += logsigmoid(f * code(n, y));
-		}
-	}
-}
 
-float AdaGramModel<Mode::hierarchical_softmax>::inplaceUpdate(size_t x, size_t y, const VectorXf& z, float lr)
-{
-	MatrixXf in_grad = MatrixXf::Zero(M, T);
-	VectorXf out_grad = VectorXf::Zero(M);
-
-	float pr = 0;
-	for (int n = 0; n < code.rows() && code(n, y); ++n)
-	{
-		auto outcol = out.col(path(n, y));
-		out_grad.setZero();
-
-		for (int k = 0; k < T; ++k)
-		{
-			if (z[k] < sense_threshold) continue;
-			auto incol = in.col(x * T + k);
-			float f = incol.dot(outcol);
-			pr += z[k] * logsigmoid(f * code(n, y));
-
-			float d = (1 + code(n, y)) / 2 - sigmoid(f);
-			float g = z[k] * lr * d;
-
-			in_grad.col(k) += g * outcol;
-			out_grad += g * incol;
-		}
-		outcol += out_grad;
-	}
-
-	for (int k = 0; k < T; ++k)
-	{
-		if (z[k] < sense_threshold) continue;
-		auto incol = in.col(x * T + k);
-		incol += in_grad.col(k);
-	}
-	return pr;
-}
-
-void AdaGramModel<Mode::negative_sampling>::updateZ(VectorXf & z, size_t x, size_t y, bool negative) const
-{
-	for (int k = 0; k < T; ++k)
-	{
-		float f = in.col(x * T + k).dot(out.col(y));
-		z[k] += logsigmoid(f * (negative ? -1 : 1));
-	}
-}
-
-float AdaGramModel<Mode::negative_sampling>::inplaceUpdate(size_t x, size_t y, const VectorXf & z, float lr, bool negative)
-{
-	MatrixXf in_grad = MatrixXf::Zero(M, T);
-	VectorXf out_grad = VectorXf::Zero(M);
-
-	float pr = 0;
-	auto outcol = out.col(y);
-	for (int k = 0; k < T; ++k)
-	{
-		if (z[k] < sense_threshold) continue;
-		auto incol = in.col(x * T + k);
-		float f = incol.dot(outcol);
-		pr += z[k] * logsigmoid(f * (negative ? -1 : 1));
-
-		float d = (negative ? 0 : 1) - sigmoid(f);
-		float g = z[k] * lr * d;
-
-		in_grad.col(k) += g * outcol;
-		out_grad += g * incol;
-	}
-	outcol += out_grad;
-
-	for (int k = 0; k < T; ++k)
-	{
-		if (z[k] < sense_threshold) continue;
-		in.col(x * T + k) += in_grad.col(k);
-	}
-	return pr;
-}
-
-template<typename _Derived>
-void AdaGramBase<_Derived>::updateCounts(size_t x, const VectorXf & localCounts, float lr)
+template<typename _Derived, typename _ThreadLocalData>
+void AdaGramBase<_Derived, _ThreadLocalData>::updateCounts(size_t x, const VectorXf & localCounts, float lr)
 {
 	counts.col(x) += lr * (localCounts * frequencies[x] - counts.col(x).eval());
 }
@@ -278,15 +87,23 @@ inline void softmax_inplace(VectorXf& z)
 	z /= z.sum();
 }
 
-template<typename _Derived>
-auto AdaGramBase<_Derived>::trainVectors(const uint32_t * ws, 
+template<typename _Derived, typename _ThreadLocalData>
+template<bool _multi>
+auto AdaGramBase<_Derived, _ThreadLocalData>::trainVectors(const uint32_t * ws, 
 	size_t len, size_t window_length, 
 	float start_lr, float end_lr,
-	ThreadLocalData& ld, size_t threadId) -> Report
+	_ThreadLocalData& ld, 
+	size_t num_workers, std::mutex* mtx_in, std::mutex* mtx_out) -> Report
 {
 	Report ret;
 	size_t ll_cnt = 0;
 	uniform_int_distribution<size_t> uid{ 0, window_length > 2 ? window_length - 2 : 0 };
+
+	if(_multi) 
+	{
+		static_cast<_Derived*>(this)->initSharedForMulti(ld, window_length);
+	}
+
 	for (size_t i = 0; i < len; ++i)
 	{
 		const auto& x = ws[i];
@@ -307,7 +124,8 @@ auto AdaGramBase<_Derived>::trainVectors(const uint32_t * ws,
 		for (auto j = jBegin; j <= jEnd; ++j)
 		{
 			if (i == j) continue;
-			static_cast<_Derived*>(this)->updateZ(z, x, ws[j]);
+			if(_multi) static_cast<_Derived*>(this)->allocateCache(ld, ws[j], num_workers);
+			static_cast<_Derived*>(this)->updateZ(x, ws[j], z);
 			assert(isnormal(z[0]));
 		}
 
@@ -317,14 +135,43 @@ auto AdaGramBase<_Derived>::trainVectors(const uint32_t * ws,
 		for (auto j = jBegin; j <= jEnd; ++j)
 		{
 			if (i == j) continue;
-			float ll = static_cast<_Derived*>(this)->inplaceUpdate(x, ws[j], z, lr);
+			float ll;
+			if(_multi) ll = static_cast<_Derived*>(this)->update(x, ws[j], z, lr, ld);
+			else ll = static_cast<_Derived*>(this)->inplaceUpdate(x, ws[j], z, lr);
 			assert(isnormal(ll));
 			ll_cnt++;
 			ret.ll += (ll - ret.ll) / ll_cnt;
 		}
 
-		// variational update for q(pi_v)
-		updateCounts(x, z, lr);
+		if(_multi)
+		{
+			{
+				lock_guard<mutex> lock{mtx_in[x % num_workers]};
+				// variational update for q(pi_v)
+				updateCounts(x, z, lr);	
+				in.block(0, x * T, M, T) += ld.update_in;
+			}
+
+			for(size_t hash : ld.update_out_idx_hash)
+			{
+				lock_guard<mutex> lock{mtx_out[x % num_workers]};
+				for(auto& p : ld.update_out_idx)
+				{
+					if(p.first % num_workers != hash) continue;
+					out.col(p.first) += ld.update_out.col(p.second);
+				}
+			}
+
+			ld.update_in.setZero();
+			ld.update_out.setZero();
+			ld.update_out_idx.clear();
+			ld.update_out_idx_hash.clear();
+		}
+		else
+		{
+			// variational update for q(pi_v)
+			updateCounts(x, z, lr);
+		}
 	}
 	ret.proc_words = len;
 	ret.avg_senses /= len;
@@ -332,8 +179,8 @@ auto AdaGramBase<_Derived>::trainVectors(const uint32_t * ws,
 }
 
 
-template<typename _Derived>
-void AdaGramBase<_Derived>::updateNormalizedVector()
+template<typename _Derived, typename _ThreadLocalData>
+void AdaGramBase<_Derived, _ThreadLocalData>::updateNormalizedVector()
 {
 	inNormalized = MatrixXf::Zero(in.rows(), in.cols());
 	for (size_t i = 0; i < T * vocabs.size(); ++i)
@@ -342,8 +189,8 @@ void AdaGramBase<_Derived>::updateNormalizedVector()
 	}
 }
 
-template<typename _Derived>
-void AdaGramBase<_Derived>::buildVocab(const std::function<DataReader()>& reader, size_t min_cnt)
+template<typename _Derived, typename _ThreadLocalData>
+void AdaGramBase<_Derived, _ThreadLocalData>::buildVocab(const std::function<DataReader()>& reader, size_t min_cnt)
 {
 	WordDictionary<> rdict;
 	std::vector<size_t> rfreqs;
@@ -379,27 +226,31 @@ void AdaGramBase<_Derived>::buildVocab(const std::function<DataReader()>& reader
 	buildModel();
 }
 
-template<typename _Derived>
-void AdaGramBase<_Derived>::train(const function<DataReader()>& reader, 
+template<typename _Derived, typename _ThreadLocalData>
+void AdaGramBase<_Derived, _ThreadLocalData>::train(const function<DataReader()>& reader, 
 	size_t num_workers, size_t window_length, float start_lr, float end_lr, 
 	size_t batch, size_t epoch, size_t report)
 {
 	if (!num_workers) num_workers = thread::hardware_concurrency();
 	ThreadPool workers{ num_workers };
-	vector<ThreadLocalData> ld;
+	vector<_ThreadLocalData> ld;
+	unique_ptr<mutex[]> mtx_in, mtx_out;
 	if (num_workers > 1)
 	{
 		ld.resize(num_workers);
-		for (auto& l : ld)
-		{
-			l.rg = mt19937_64{ globalData.rg() };
-		}
+		mtx_in = unique_ptr<mutex[]>(new mutex[num_workers]);
+		mtx_out = unique_ptr<mutex[]>(new mutex[num_workers]);
 	}
 	double avg_ll = 0, avg_senses = 0;
 	size_t totW = accumulate(frequencies.begin(), frequencies.end(), 0);
 	size_t total_word_cnt = epoch * totW;
 	size_t proc_word_cnt = 0, report_word_cnt = 0, max_senses = 0, skip_cnt = 0;
 	vector<vector<uint32_t>> collections;
+
+	const auto& getLR = [&]()
+	{
+		return start_lr + (end_lr - start_lr) * proc_word_cnt / total_word_cnt;
+	};
 
 	const auto& procCollection = [&]()
 	{
@@ -412,9 +263,10 @@ void AdaGramBase<_Derived>::train(const function<DataReader()>& reader,
 			futures.reserve(collections.size());
 			for (auto& d : collections)
 			{
-				futures.emplace_back(workers.enqueue([=, &d, &ld](size_t threadId)
+				futures.emplace_back(workers.enqueue([&](size_t threadId)
 				{
-					return trainVectors(d.data(), d.size(), window_length, lr, lr, ld[threadId], threadId);
+					return trainVectors<true>(d.data(), d.size(), window_length, getLR(), getLR(), ld[threadId], 
+						num_workers, mtx_in.get(), mtx_out.get());
 				}));
 			}
 			size_t collection_cnt = 0;
@@ -446,7 +298,8 @@ void AdaGramBase<_Derived>::train(const function<DataReader()>& reader,
 			for (auto& d : collections)
 			{
 				size_t bf = proc_word_cnt;
-				Report result = trainVectors(d.data(), d.size(), window_length, lr, lr, globalData);
+				Report result = trainVectors<false>(d.data(), d.size(), window_length, lr, lr, globalData,
+					1, nullptr, nullptr);
 				collection_cnt++;
 				proc_word_cnt += result.proc_words
 					+ skip_cnt * collection_cnt / collections.size() - skip_cnt * (collection_cnt - 1) / collections.size();
@@ -511,24 +364,24 @@ void AdaGramBase<_Derived>::train(const function<DataReader()>& reader,
 	updateNormalizedVector();
 }
 
-template<typename _Derived>
-void AdaGramBase<_Derived>::buildTrain(const function<DataReader()>& reader, size_t min_cnt,
+template<typename _Derived, typename _ThreadLocalData>
+void AdaGramBase<_Derived, _ThreadLocalData>::buildTrain(const function<DataReader()>& reader, size_t min_cnt,
 	size_t num_workers, size_t window_length, float start_lr, float end_lr, size_t batch_sents, size_t epochs)
 {
 	buildVocab(reader, min_cnt);
 	train(reader, num_workers, window_length, start_lr, end_lr, batch_sents, epochs);
 }
 
-template<typename _Derived>
-pair<VectorXf, size_t> AdaGramBase<_Derived>::getExpectedPi(const string & word) const
+template<typename _Derived, typename _ThreadLocalData>
+pair<VectorXf, size_t> AdaGramBase<_Derived, _ThreadLocalData>::getExpectedPi(const string & word) const
 {
 	size_t wv = vocabs.get(word);
 	if (wv == (size_t)-1) return {};
 	return getExpectedPi(wv);
 }
 
-template<typename _Derived>
-vector<tuple<string, size_t, float>> AdaGramBase<_Derived>::nearestNeighbors(const string & word, size_t ws, size_t K, float min_count) const
+template<typename _Derived, typename _ThreadLocalData>
+vector<tuple<string, size_t, float>> AdaGramBase<_Derived, _ThreadLocalData>::nearestNeighbors(const string & word, size_t ws, size_t K, float min_count) const
 {
 	const size_t V = vocabs.size();
 	size_t wv = vocabs.get(word);
@@ -561,8 +414,8 @@ vector<tuple<string, size_t, float>> AdaGramBase<_Derived>::nearestNeighbors(con
 	return top;
 }
 
-template<typename _Derived>
-vector<float> AdaGramBase<_Derived>::disambiguate(const string & word, const vector<string>& context, bool use_prior, float min_prob) const
+template<typename _Derived, typename _ThreadLocalData>
+vector<float> AdaGramBase<_Derived, _ThreadLocalData>::disambiguate(const string & word, const vector<string>& context, bool use_prior, float min_prob) const
 {
 	const size_t V = vocabs.size();
 	size_t wv = vocabs.get(word);
@@ -583,15 +436,15 @@ vector<float> AdaGramBase<_Derived>::disambiguate(const string & word, const vec
 	{
 		size_t yId = vocabs.get(y);
 		if (yId == (size_t)-1) continue;
-		static_cast<const _Derived*>(this)->updateZ(z, wv, yId);
+		static_cast<const _Derived*>(this)->updateZ(wv, yId, z);
 	}
 
 	softmax_inplace(z);
 	return { z.data(), z.data() + T };
 }
 
-template<typename _Derived>
-vector<tuple<string, size_t, float>> AdaGramBase<_Derived>::mostSimilar(const vector<pair<string, size_t>>& positiveWords, 
+template<typename _Derived, typename _ThreadLocalData>
+vector<tuple<string, size_t, float>> AdaGramBase<_Derived, _ThreadLocalData>::mostSimilar(const vector<pair<string, size_t>>& positiveWords, 
 	const vector<pair<string, size_t>>& negativeWords, size_t K, float min_count) const
 {
 	VectorXf vec = VectorXf::Zero(M);
@@ -641,8 +494,8 @@ vector<tuple<string, size_t, float>> AdaGramBase<_Derived>::mostSimilar(const ve
 	return top;
 }
 
-template<typename _Derived>
-void AdaGramBase<_Derived>::saveModel(ostream & os) const
+template<typename _Derived, typename _ThreadLocalData>
+void AdaGramBase<_Derived, _ThreadLocalData>::saveModel(ostream & os) const
 {
 	writeToBinStream(os, (uint32_t)M);
 	writeToBinStream(os, (uint32_t)T);
@@ -660,8 +513,8 @@ void AdaGramBase<_Derived>::saveModel(ostream & os) const
 	//writeToBinStream(os, path);
 }
 
-template<typename _Derived>
-void AdaGramBase<_Derived>::loadModel(istream & is)
+template<typename _Derived, typename _ThreadLocalData>
+void AdaGramBase<_Derived, _ThreadLocalData>::loadModel(istream & is)
 {
 	size_t M = readFromBinStream<uint32_t>(is);
 	size_t T = readFromBinStream<uint32_t>(is);
@@ -691,7 +544,260 @@ void AdaGramBase<_Derived>::loadModel(istream & is)
 	updateNormalizedVector();
 }
 
-template class ag::AdaGramBase<AdaGramModel<Mode::hierarchical_softmax>>;
-template class ag::AdaGramBase<AdaGramModel<Mode::negative_sampling>>;
-template class ag::AdaGramModel<Mode::hierarchical_softmax>;
-template class ag::AdaGramModel<Mode::negative_sampling>;
+struct HSoftmaxNode
+{
+	uint32_t parent = -1;
+	bool branch = false;
+
+	static vector<pair<int32_t, int8_t>> softmax_path(
+		const vector<HSoftmaxNode>& nodes, size_t V, size_t id)
+	{
+		vector<pair<int32_t, int8_t>> ret;
+		while (nodes[id].parent != (uint32_t)-1)
+		{
+			const auto& node = nodes[id];
+			assert(node.parent >= V);
+			ret.emplace_back(2 * V - 2 - node.parent, node.branch ? 1 : -1);
+			id = node.parent;
+		}
+		return ret;
+	}
+};
+
+
+auto AdaGramModel<Mode::hierarchical_softmax>::buildHuffmanTree() const 
+	-> vector<HuffmanResult>
+{
+	auto V = this->vocabs.size();
+	auto nodes = vector<HSoftmaxNode>(V);
+	vector<pair<size_t, size_t>> heap;
+
+	for (size_t i = 0; i < V; ++i)
+	{
+		heap.emplace_back(i, this->frequencies[i]);
+	}
+	size_t heapSize = V;
+
+	const auto& freq_cmp = [](const pair<size_t, size_t>& a, const pair<size_t, size_t>& b)
+	{
+		return a.second > b.second;
+	};
+	make_heap(heap.begin(), heap.end(), freq_cmp);
+
+	size_t L = V;
+	while (heapSize > 1)
+	{
+		nodes.emplace_back();
+		size_t freq = 0;
+
+		pop_heap(heap.begin(), heap.begin() + heapSize, freq_cmp);
+		heapSize--;
+		nodes[heap[heapSize].first].parent = L;
+		nodes[heap[heapSize].first].branch = true;
+		freq += heap[heapSize].second;
+
+		pop_heap(heap.begin(), heap.begin() + heapSize, freq_cmp);
+		heapSize--;
+		nodes[heap[heapSize].first].parent = L;
+		nodes[heap[heapSize].first].branch = false;
+		freq += heap[heapSize].second;
+
+		heap[heapSize] = { nodes.size() - 1, freq };
+		heapSize++;
+		push_heap(heap.begin(), heap.begin() + heapSize, freq_cmp);
+		L++;
+	}
+
+
+	auto outputs = vector<HuffmanResult>(V);
+	for (auto v = 0; v < V; ++v)
+	{
+		vector<int8_t> code;
+		vector<uint32_t> path;
+		for (auto& p : HSoftmaxNode::softmax_path(nodes, V, v))
+		{
+			code.emplace_back(p.second);
+			path.emplace_back(p.first);
+		}
+		outputs[v] = HuffmanResult{ code, path };
+	}
+	return outputs;
+}
+
+void AdaGramModel<Mode::hierarchical_softmax>::_buildModel()
+{
+	const size_t V = this->vocabs.size();
+
+	auto outputs = buildHuffmanTree();
+	size_t max_length = max_element(outputs.begin(), outputs.end(), [](const HuffmanResult& a, const HuffmanResult& b)
+	{
+		return a.code.size() < b.code.size();
+	})->code.size();
+	path = Matrix<uint32_t, Dynamic, Dynamic>::Zero(max_length, V);
+	code = Matrix<int8_t, Dynamic, Dynamic>::Zero(max_length, V);
+
+	for (size_t v = 0; v < V; ++v)
+	{
+		copy(outputs[v].code.begin(), outputs[v].code.end(), code.col(v).data());
+		copy(outputs[v].path.begin(), outputs[v].path.end(), path.col(v).data());
+	}
+}
+
+
+void AdaGramModel<Mode::hierarchical_softmax>::updateZ(size_t x, size_t y, VectorXf & z) const
+{
+	for (int n = 0; n < code.rows() && code(n, y); ++n)
+	{
+		auto ocol = this->out.col(path(n, y));
+		for (int k = 0; k < this->T; ++k)
+		{
+			float f = this->in.col(x * this->T + k).dot(ocol);
+			z[k] += logsigmoid(f * code(n, y));
+		}
+	}
+}
+
+float AdaGramModel<Mode::hierarchical_softmax>::inplaceUpdate(size_t x, size_t y, const VectorXf& z, float lr)
+{
+	MatrixXf in_grad = MatrixXf::Zero(this->M, this->T);
+	VectorXf out_grad = VectorXf::Zero(this->M);
+
+	float pr = 0;
+	for (int n = 0; n < code.rows() && code(n, y); ++n)
+	{
+		auto outcol = this->out.col(path(n, y));
+		out_grad.setZero();
+
+		for (int k = 0; k < this->T; ++k)
+		{
+			if (z[k] < this->sense_threshold) continue;
+			auto incol = this->in.col(x * T + k);
+			float f = incol.dot(outcol);
+			pr += z[k] * logsigmoid(f * code(n, y));
+
+			float d = (1 + code(n, y)) / 2 - sigmoid(f);
+			float g = z[k] * lr * d;
+
+			in_grad.col(k) += g * outcol;
+			out_grad += g * incol;
+		}
+		outcol += out_grad;
+	}
+
+	for (int k = 0; k < T; ++k)
+	{
+		if (z[k] < sense_threshold) continue;
+		auto incol = this->in.col(x * T + k);
+		incol += in_grad.col(k);
+	}
+	return pr;
+}
+
+
+float AdaGramModel<Mode::hierarchical_softmax>::update(size_t x, size_t y, const VectorXf& z, float lr, ThreadLocalData& ld) const
+{
+	float pr = 0;
+	for (int n = 0; n < code.rows() && code(n, y); ++n)
+	{
+		auto outcol = out.col(path(n, y));
+		size_t cache_id = ld.update_out_idx.find(path(n, y))->second;
+
+		for (int k = 0; k < T; ++k)
+		{
+			if (z[k] < sense_threshold) continue;
+			auto incol = in.col(x * T + k);
+			float f = incol.dot(outcol);
+			pr += z[k] * logsigmoid(f * code(n, y));
+
+			float d = (1 + code(n, y)) / 2 - sigmoid(f);
+			float g = z[k] * lr * d;
+
+			ld.update_in.col(k) += g * outcol;
+			ld.update_out.col(cache_id) += g * incol;
+		}
+	}
+
+	return pr;
+}
+
+void AdaGramModel<Mode::hierarchical_softmax>::initSharedForMulti(ThreadLocalData& ld, size_t window_length) const
+{
+	ld.update_in = MatrixXf::Zero(M, T);
+	ld.update_out = MatrixXf::Zero(M, window_length * 2 * code.rows());
+}
+
+void AdaGramModel<Mode::hierarchical_softmax>::allocateCache(ThreadLocalData& ld, size_t y, size_t num_workers) const
+{
+	for (int n = 0; n < code.rows() && code(n, y); ++n)
+	{
+		auto node_id = path(n, y);;
+		if(ld.update_out_idx.find(node_id) == ld.update_out_idx.end())
+		{
+			ld.update_out_idx.emplace(node_id, ld.update_out_idx.size());
+			ld.update_out_idx_hash.emplace(node_id % num_workers);
+		}
+	}
+}
+
+void AdaGramModel<Mode::negative_sampling>::_buildModel()
+{
+	vector<double> weights;
+	transform(frequencies.begin(), frequencies.end(), back_inserter(weights), [](auto w) { return pow(w, 0.75); });
+	unigramTable = discrete_distribution<uint32_t>(weights.begin(), weights.end());
+}
+
+void AdaGramModel<Mode::negative_sampling>::updateZ(size_t x, size_t y, VectorXf & z, bool negative) const
+{
+	for (int k = 0; k < T; ++k)
+	{
+		float f = in.col(x * T + k).dot(out.col(y));
+		z[k] += logsigmoid(f * (negative ? -1 : 1));
+	}
+}
+
+float AdaGramModel<Mode::negative_sampling>::inplaceUpdate(size_t x, size_t y, const VectorXf & z, float lr, bool negative)
+{
+	MatrixXf in_grad = MatrixXf::Zero(M, T);
+	VectorXf out_grad = VectorXf::Zero(M);
+
+	float pr = 0;
+	auto outcol = out.col(y);
+	for (int k = 0; k < T; ++k)
+	{
+		if (z[k] < sense_threshold) continue;
+		auto incol = in.col(x * T + k);
+		float f = incol.dot(outcol);
+		pr += z[k] * logsigmoid(f * (negative ? -1 : 1));
+
+		float d = (negative ? 0 : 1) - sigmoid(f);
+		float g = z[k] * lr * d;
+
+		in_grad.col(k) += g * outcol;
+		out_grad += g * incol;
+	}
+	outcol += out_grad;
+
+	for (int k = 0; k < T; ++k)
+	{
+		if (z[k] < sense_threshold) continue;
+		in.col(x * T + k) += in_grad.col(k);
+	}
+	return pr;
+}
+
+float AdaGramModel<Mode::negative_sampling>::update(size_t x, size_t y, const VectorXf& z, float lr, ThreadLocalData& ld, bool negative) const
+{
+
+}
+
+void AdaGramModel<Mode::negative_sampling>::initSharedForMulti(ThreadLocalData& ld, size_t window_length) const
+{
+	ld.update_in = MatrixXf::Zero(M, T);
+}
+
+void AdaGramModel<Mode::negative_sampling>::allocateCache(ThreadLocalData& ld, size_t y, size_t num_workers) const
+{
+}
+
+template class ag::AdaGramBase<AdaGramModel<Mode::hierarchical_softmax>, ThreadLocalBase>;
+template class ag::AdaGramBase<AdaGramModel<Mode::negative_sampling>, ThreadLocalBase>;

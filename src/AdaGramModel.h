@@ -1,6 +1,8 @@
 #pragma once
 
 #include <vector>
+#include <unordered_map>
+#include <unordered_set>
 #include <string>
 #include <random>
 #include <functional>
@@ -104,16 +106,18 @@ namespace ag
 		using BasicLineReader = FileLineReader<AllPass, NoTransform>;
 	}
 
-	template<typename _Derived>
+	struct ThreadLocalBase
+	{
+		std::mt19937_64 rg;
+		Eigen::MatrixXf update_in, update_out;
+		std::unordered_map<uint32_t, uint32_t> update_out_idx;
+		std::unordered_set<uint32_t> update_out_idx_hash;
+	};
+
+	template<typename _Derived, typename _ThreadLocalData>
 	class AdaGramBase
 	{
 	protected:
-
-		struct ThreadLocalData
-		{
-			std::mt19937_64 rg;
-		};
-
 		struct Report
 		{
 			float ll = 0, avg_senses = 0;
@@ -137,14 +141,16 @@ namespace ag
 		float sense_threshold = 1e-10;
 		bool context_cut = true;
 
-		ThreadLocalData globalData;
+		_ThreadLocalData globalData;
 		WordDictionary<> vocabs;
 
 		void updateCounts(size_t x, const Eigen::VectorXf& localCounts, float lr);
 		std::pair<Eigen::VectorXf, size_t> getExpectedLogPi(size_t v) const;
 		std::pair<Eigen::VectorXf, size_t> getExpectedPi(size_t v) const;
 		void buildModel();
-		Report trainVectors(const uint32_t* ws, size_t len, size_t window_length, float start_lr, float end_lr, ThreadLocalData& ld, size_t threadId = 0);
+		template<bool _multi>
+		Report trainVectors(const uint32_t* ws, size_t len, size_t window_length, float start_lr, float end_lr, 
+			_ThreadLocalData& ld, size_t num_workers, std::mutex* mtx_in, std::mutex* mtx_out);
 		void updateNormalizedVector();
 	public:
 
@@ -194,10 +200,12 @@ namespace ag
 
 	template<>
 	class AdaGramModel<Mode::hierarchical_softmax>
-		: public AdaGramBase<AdaGramModel<Mode::hierarchical_softmax>>
+		: public AdaGramBase<AdaGramModel<Mode::hierarchical_softmax>, ThreadLocalBase>
 	{
-		friend class AdaGramBase<AdaGramModel<Mode::hierarchical_softmax>>;
-	private:
+		using BaseClass = AdaGramBase<AdaGramModel<Mode::hierarchical_softmax>, ThreadLocalBase>;
+		using ThreadLocalData = ThreadLocalBase;
+		friend BaseClass;
+
 		struct HuffmanResult
 		{
 			std::vector<int8_t> code;
@@ -210,25 +218,35 @@ namespace ag
 		Eigen::Matrix<uint32_t, Eigen::Dynamic, Eigen::Dynamic> path; // (MAX_CODELENGTH, V)
 
 		void _buildModel();
-		void updateZ(Eigen::VectorXf& z, size_t x, size_t y) const;
+		void updateZ(size_t x, size_t y, Eigen::VectorXf& z) const;
 		float inplaceUpdate(size_t x, size_t y, const Eigen::VectorXf& z, float lr);
+
+		void initSharedForMulti(ThreadLocalData& ld, size_t window_length) const;
+		void allocateCache(ThreadLocalData& ld, size_t y, size_t num_workers) const;
+		float update(size_t x, size_t y, const Eigen::VectorXf& z, float lr, ThreadLocalData& data) const;
 	public:
-		using AdaGramBase<AdaGramModel<Mode::hierarchical_softmax>>::AdaGramBase;
+		using AdaGramBase<AdaGramModel<Mode::hierarchical_softmax>, ThreadLocalBase>::AdaGramBase;
 	};
 
 	template<>
 	class AdaGramModel<Mode::negative_sampling>
-		: public AdaGramBase<AdaGramModel<Mode::negative_sampling>>
+		: public AdaGramBase<AdaGramModel<Mode::negative_sampling>, ThreadLocalBase>
 	{
-		friend class AdaGramBase<AdaGramModel<Mode::negative_sampling>>;
-	private:
+		using BaseClass = AdaGramBase<AdaGramModel<Mode::negative_sampling>, ThreadLocalBase>;
+		using ThreadLocalData = ThreadLocalBase;
+		friend BaseClass;
+
 		std::discrete_distribution<uint32_t> unigramTable;
 		size_t negativeSampleSize = 0;
 
 		void _buildModel();
-		void updateZ(Eigen::VectorXf& z, size_t x, size_t y, bool negative = false) const;
+		void updateZ(size_t x, size_t y, Eigen::VectorXf& z, bool negative = false) const;
 		float inplaceUpdate(size_t x, size_t y, const Eigen::VectorXf& z, float lr, bool negative = false);
+
+		void initSharedForMulti(ThreadLocalData& ld, size_t window_length) const;
+		void allocateCache(ThreadLocalData& ld, size_t y, size_t num_workers) const;
+		float update(size_t x, size_t y, const Eigen::VectorXf& z, float lr, ThreadLocalData& data, bool negative = false) const;
 	public:
-		using AdaGramBase<AdaGramModel<Mode::negative_sampling>>::AdaGramBase;
+		using AdaGramBase<AdaGramModel<Mode::negative_sampling>, ThreadLocalBase>::AdaGramBase;
 	};
 }

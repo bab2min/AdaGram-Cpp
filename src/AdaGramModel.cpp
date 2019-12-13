@@ -89,7 +89,7 @@ inline void softmax_inplace(VectorXf& z)
 
 template<typename _Derived, typename _ThreadLocalData>
 template<bool _multi>
-auto AdaGramBase<_Derived, _ThreadLocalData>::trainVectors(const uint32_t * ws, 
+auto AdaGramBase<_Derived, _ThreadLocalData>::trainVectors(const word_id_t * ws, 
 	size_t len, size_t window_length, 
 	float start_lr, float end_lr,
 	_ThreadLocalData& ld, 
@@ -126,7 +126,7 @@ auto AdaGramBase<_Derived, _ThreadLocalData>::trainVectors(const uint32_t * ws,
 		{
 			if (i == j) continue;
 			if (_multi) static_cast<_Derived*>(this)->allocateCache(ld, ws[j], num_workers);
-			static_cast<_Derived*>(this)->updateZ(x, ws[j], z, fs.col(j - jBegin).data());
+			static_cast<_Derived*>(this)->updateZ(ld, x, ws[j], z, fs.col(j - jBegin).data());
 			assert(isnormal(z[0]));
 		}
 
@@ -137,8 +137,8 @@ auto AdaGramBase<_Derived, _ThreadLocalData>::trainVectors(const uint32_t * ws,
 		{
 			if (i == j) continue;
 			float ll;
-			if(_multi) ll = static_cast<_Derived*>(this)->update(x, ws[j], z, fs.col(j - jBegin).data(), lr, ld);
-			else ll = static_cast<_Derived*>(this)->inplaceUpdate(x, ws[j], z, fs.col(j - jBegin).data(), lr);
+			if(_multi) ll = static_cast<_Derived*>(this)->update(ld, x, ws[j], z, fs.col(j - jBegin).data(), lr);
+			else ll = static_cast<_Derived*>(this)->inplaceUpdate(ld, x, ws[j], z, fs.col(j - jBegin).data(), lr);
 			assert(isnormal(ll));
 			ll_cnt++;
 			ret.ll += (ll - ret.ll) / ll_cnt;
@@ -246,11 +246,32 @@ void AdaGramBase<_Derived, _ThreadLocalData>::train(const function<DataReader()>
 	size_t totW = accumulate(frequencies.begin(), frequencies.end(), 0);
 	size_t total_word_cnt = epoch * totW;
 	size_t proc_word_cnt = 0, report_word_cnt = 0, max_senses = 0, skip_cnt = 0;
-	vector<vector<uint32_t>> collections;
+	vector<vector<word_id_t>> collections;
 
 	const auto& getLR = [&]()
 	{
 		return start_lr + (end_lr - start_lr) * proc_word_cnt / total_word_cnt;
+	};
+
+	const auto& updateStat = [&](const Report& result, size_t collection_cnt)
+	{
+		size_t bf = proc_word_cnt;
+		proc_word_cnt += result.proc_words
+			+ skip_cnt * collection_cnt / collections.size() - skip_cnt * (collection_cnt - 1) / collections.size();
+		report_word_cnt += result.proc_words;
+		avg_ll += (result.ll - avg_ll) * result.proc_words / report_word_cnt;
+		avg_senses += (result.avg_senses - avg_senses) * result.proc_words / report_word_cnt;
+		max_senses = max(max_senses, result.max_senses);
+
+		if (report && bf / report < proc_word_cnt / report)
+		{
+			fprintf(stderr, "%.2f%% ll:%4.4f, avg_senses:%3.3f, max_senses:%zd\n",
+				100.f * proc_word_cnt / total_word_cnt, avg_ll, avg_senses, max_senses);
+			report_word_cnt = 0;
+			avg_ll = 0;
+			avg_senses = 0;
+			max_senses = 0;
+		}
 	};
 
 	const auto& procCollection = [&]()
@@ -272,24 +293,9 @@ void AdaGramBase<_Derived, _ThreadLocalData>::train(const function<DataReader()>
 			size_t collection_cnt = 0;
 			for (auto& f : futures)
 			{
-				size_t bf = proc_word_cnt;
 				Report result = f.get();
 				collection_cnt++;
-				proc_word_cnt += result.proc_words
-					+ skip_cnt * collection_cnt / collections.size() - skip_cnt * (collection_cnt - 1) / collections.size();
-				report_word_cnt += result.proc_words;
-				avg_ll += (result.ll - avg_ll) * result.proc_words / report_word_cnt;
-				avg_senses += (result.avg_senses - avg_senses) * result.proc_words / report_word_cnt;
-				max_senses = max(max_senses, result.max_senses);
-				if (report && bf / report < proc_word_cnt / report)
-				{
-					fprintf(stderr, "%.2f%% ll:%4.4f, avg_senses:%3.3f, max_senses:%zd\n",
-						100.f * proc_word_cnt / total_word_cnt, avg_ll, avg_senses, max_senses);
-					report_word_cnt = 0;
-					avg_ll = 0;
-					avg_senses = 0;
-					max_senses = 0;
-				}
+				updateStat(result, ++collection_cnt);
 			}
 		}
 		else
@@ -297,25 +303,9 @@ void AdaGramBase<_Derived, _ThreadLocalData>::train(const function<DataReader()>
 			size_t collection_cnt = 0;
 			for (auto& d : collections)
 			{
-				size_t bf = proc_word_cnt;
 				Report result = trainVectors<false>(d.data(), d.size(), window_length, getLR(), getLR(), globalData,
 					1, nullptr, nullptr);
-				collection_cnt++;
-				proc_word_cnt += result.proc_words
-					+ skip_cnt * collection_cnt / collections.size() - skip_cnt * (collection_cnt - 1) / collections.size();
-				report_word_cnt += result.proc_words;
-				avg_ll += (result.ll - avg_ll) * result.proc_words / report_word_cnt;
-				avg_senses += (result.avg_senses - avg_senses) * result.proc_words / report_word_cnt;
-				max_senses = max(max_senses, result.max_senses);
-				if(report && bf / report < proc_word_cnt / report)
-				{
-					fprintf(stderr, "%.2f%% ll:%4.4f, avg_senses:%3.3f, max_senses:%zd\n", 
-						100.f * proc_word_cnt / total_word_cnt, avg_ll, avg_senses, max_senses);
-					report_word_cnt = 0;
-					avg_ll = 0;
-					avg_senses = 0;
-					max_senses = 0;
-				}
+				updateStat(result, ++collection_cnt);
 			}
 		}
 		collections.clear();
@@ -420,7 +410,7 @@ vector<float> AdaGramBase<_Derived, _ThreadLocalData>::disambiguate(const string
 	const size_t V = vocabs.size();
 	size_t wv = vocabs.get(word);
 	if (wv == (size_t)-1) return {};
-
+	_ThreadLocalData ld;
 	VectorXf z = VectorXf::Zero(T);
 	if (use_prior)
 	{
@@ -436,7 +426,7 @@ vector<float> AdaGramBase<_Derived, _ThreadLocalData>::disambiguate(const string
 	{
 		size_t yId = vocabs.get(y);
 		if (yId == (size_t)-1) continue;
-		static_cast<const _Derived*>(this)->updateZ(wv, yId, z, nullptr);
+		static_cast<const _Derived*>(this)->updateZ(ld, wv, yId, z, nullptr);
 	}
 
 	softmax_inplace(z);
@@ -544,6 +534,7 @@ void AdaGramBase<_Derived, _ThreadLocalData>::loadModel(istream & is)
 	updateNormalizedVector();
 }
 
+
 struct HSoftmaxNode
 {
 	uint32_t parent = -1;
@@ -644,7 +635,7 @@ void AdaGramModel<Mode::hierarchical_softmax>::_buildModel()
 }
 
 
-void AdaGramModel<Mode::hierarchical_softmax>::updateZ(size_t x, size_t y, VectorXf & z, float* f) const
+void AdaGramModel<Mode::hierarchical_softmax>::updateZ(ThreadLocalData& ld, word_id_t x, word_id_t y, VectorXf & z, float* f) const
 {
 	for (int n = 0; n < code.rows() && code(n, y); ++n)
 	{
@@ -658,7 +649,7 @@ void AdaGramModel<Mode::hierarchical_softmax>::updateZ(size_t x, size_t y, Vecto
 	}
 }
 
-float AdaGramModel<Mode::hierarchical_softmax>::inplaceUpdate(size_t x, size_t y, const VectorXf& z, const float* f, float lr)
+float AdaGramModel<Mode::hierarchical_softmax>::inplaceUpdate(ThreadLocalData& ld, word_id_t x, word_id_t y, const VectorXf& z, const float* f, float lr)
 {
 	MatrixXf in_grad = MatrixXf::Zero(M, T);
 	VectorXf out_grad = VectorXf::Zero(M);
@@ -694,7 +685,7 @@ float AdaGramModel<Mode::hierarchical_softmax>::inplaceUpdate(size_t x, size_t y
 }
 
 
-float AdaGramModel<Mode::hierarchical_softmax>::update(size_t x, size_t y, const VectorXf& z, const float* f, float lr, ThreadLocalData& ld) const
+float AdaGramModel<Mode::hierarchical_softmax>::update(ThreadLocalData& ld, word_id_t x, word_id_t y, const VectorXf& z, const float* f, float lr) const
 {
 	float pr = 0;
 	for (int n = 0; n < code.rows() && code(n, y); ++n)
@@ -727,10 +718,10 @@ size_t AdaGramModel<Mode::hierarchical_softmax>::getFWidth() const
 void AdaGramModel<Mode::hierarchical_softmax>::initSharedForMulti(ThreadLocalData& ld, size_t window_length) const
 {
 	ld.update_in = MatrixXf::Zero(M, T);
-	ld.update_out = MatrixXf::Zero(M, window_length * 2 * code.rows());
+	ld.update_out = MatrixXf::Zero(M, window_length * 2 * getFWidth());
 }
 
-void AdaGramModel<Mode::hierarchical_softmax>::allocateCache(ThreadLocalData& ld, size_t y, size_t num_workers) const
+void AdaGramModel<Mode::hierarchical_softmax>::allocateCache(ThreadLocalData& ld, word_id_t y, size_t num_workers) const
 {
 	for (int n = 0; n < code.rows() && code(n, y); ++n)
 	{
@@ -743,23 +734,37 @@ void AdaGramModel<Mode::hierarchical_softmax>::allocateCache(ThreadLocalData& ld
 	}
 }
 
+
 void AdaGramModel<Mode::negative_sampling>::_buildModel()
 {
 	vector<double> weights;
 	transform(frequencies.begin(), frequencies.end(), back_inserter(weights), [](auto w) { return pow(w, 0.75); });
-	unigramTable = discrete_distribution<uint32_t>(weights.begin(), weights.end());
+	unigram_table = discrete_distribution<word_id_t>(weights.begin(), weights.end());
 }
 
-void AdaGramModel<Mode::negative_sampling>::updateZ(size_t x, size_t y, VectorXf & z, float* f, bool negative) const
+void AdaGramModel<Mode::negative_sampling>::updateZ(ThreadLocalData& ld, word_id_t x, word_id_t y, VectorXf & z, float* f) const
 {
-	for (int k = 0; k < T; ++k)
+	ld.consumed = 0;
+	for(size_t n = 0; n <= negative_sample_size; ++n)
 	{
-		float f = in.col(x * T + k).dot(out.col(y));
-		z[k] += logsigmoid(f * (negative ? -1 : 1));
+		word_id_t w;
+		if(n) 
+		{
+			w = unigram_table(ld.rg);
+			ld.negative_samples.emplace_back(w);
+		}
+		else w = y;
+
+		for (int k = 0; k < T; ++k)
+		{
+			float dot = in.col(x * T + k).dot(out.col(w));
+			if(f) f[n * T + k] = dot;
+			z[k] += logsigmoid(dot * (n == 0 ? 1 : -1));
+		}
 	}
 }
 
-float AdaGramModel<Mode::negative_sampling>::inplaceUpdate(size_t x, size_t y, const VectorXf & z, const float* f, float lr, bool negative)
+float AdaGramModel<Mode::negative_sampling>::inplaceUpdateSingle(ThreadLocalData& ld, word_id_t x, word_id_t y, const VectorXf & z, const float* f, float lr, bool negative)
 {
 	MatrixXf in_grad = MatrixXf::Zero(M, T);
 	VectorXf out_grad = VectorXf::Zero(M);
@@ -770,10 +775,9 @@ float AdaGramModel<Mode::negative_sampling>::inplaceUpdate(size_t x, size_t y, c
 	{
 		if (z[k] < sense_threshold) continue;
 		auto incol = in.col(x * T + k);
-		float f = incol.dot(outcol);
-		pr += z[k] * logsigmoid(f * (negative ? -1 : 1));
+		pr += z[k] * logsigmoid(f[k] * (negative ? -1 : 1));
 
-		float d = (negative ? 0 : 1) - sigmoid(f);
+		float d = (negative ? 0 : 1) - sigmoid(f[k]);
 		float g = z[k] * lr * d;
 
 		in_grad.col(k) += g * outcol;
@@ -789,25 +793,58 @@ float AdaGramModel<Mode::negative_sampling>::inplaceUpdate(size_t x, size_t y, c
 	return pr;
 }
 
-float AdaGramModel<Mode::negative_sampling>::update(size_t x, size_t y, const VectorXf& z, const float* f, float lr, ThreadLocalData& ld, bool negative) const
+float AdaGramModel<Mode::negative_sampling>::inplaceUpdate(ThreadLocalData& ld, word_id_t x, word_id_t y, const VectorXf & z, const float* f, float lr)
+{
+	float pr = 0;
+	for(size_t n = 0; n <= negative_sample_size; ++n)
+	{
+		word_id_t w;
+		if(n)
+		{
+			w = ld.negative_samples[ld.consumed++];
+		}
+		else w = y;
+		pr += inplaceUpdateSingle(ld, x, w, z, f + n * T, lr, !!n);
+	}
+	return pr;
+}
+
+float AdaGramModel<Mode::negative_sampling>::updateSingle(ThreadLocalData& ld, word_id_t x, word_id_t y, const VectorXf& z, const float* f, float lr, bool negative) const
 {
 	return 0;
 }
 
+float AdaGramModel<Mode::negative_sampling>::update(ThreadLocalData& ld, word_id_t x, word_id_t y, const VectorXf& z, const float* f, float lr) const
+{
+	float pr = 0;
+	for(size_t n = 0; n <= negative_sample_size; ++n)
+	{
+		word_id_t w;
+		if(n)
+		{
+			w = ld.negative_samples[ld.consumed++];
+		}
+		else w = y;
+		pr += updateSingle(ld, x, w, z, f + n * T, lr, !!n);
+	}
+	return pr;
+}
+
 size_t AdaGramModel<Mode::negative_sampling>::getFWidth() const
 {
-	return 0;
+	return negative_sample_size + 1;
 }
 
 
 void AdaGramModel<Mode::negative_sampling>::initSharedForMulti(ThreadLocalData& ld, size_t window_length) const
 {
 	ld.update_in = MatrixXf::Zero(M, T);
+	ld.update_out = MatrixXf::Zero(M, window_length * 2 * getFWidth());
 }
 
-void AdaGramModel<Mode::negative_sampling>::allocateCache(ThreadLocalData& ld, size_t y, size_t num_workers) const
+void AdaGramModel<Mode::negative_sampling>::allocateCache(ThreadLocalData& ld, word_id_t y, size_t num_workers) const
 {
 }
 
 template class ag::AdaGramBase<AdaGramModel<Mode::hierarchical_softmax>, ThreadLocalBase>;
-template class ag::AdaGramBase<AdaGramModel<Mode::negative_sampling>, ThreadLocalBase>;
+template class ag::AdaGramBase<AdaGramModel<Mode::negative_sampling>, ThreadLocalNS>;

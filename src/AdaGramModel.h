@@ -27,6 +27,7 @@ namespace ag
 	};
 
 	using DataReader = std::function<Record()>;
+	using word_id_t = uint32_t;
 
 	namespace util
 	{
@@ -110,8 +111,8 @@ namespace ag
 	{
 		std::mt19937_64 rg;
 		Eigen::MatrixXf update_in, update_out;
-		std::unordered_map<uint32_t, uint32_t> update_out_idx;
-		std::unordered_set<uint32_t> update_out_idx_hash;
+		std::unordered_map<word_id_t, word_id_t> update_out_idx;
+		std::unordered_set<word_id_t> update_out_idx_hash;
 	};
 
 	template<typename _Derived, typename _ThreadLocalData>
@@ -149,7 +150,7 @@ namespace ag
 		std::pair<Eigen::VectorXf, size_t> getExpectedPi(size_t v) const;
 		void buildModel();
 		template<bool _multi>
-		Report trainVectors(const uint32_t* ws, size_t len, size_t window_length, float start_lr, float end_lr, 
+		Report trainVectors(const word_id_t* ws, size_t len, size_t window_length, float start_lr, float end_lr, 
 			_ThreadLocalData& ld, size_t num_workers, std::mutex* mtx_in, std::mutex* mtx_out);
 		void updateNormalizedVector();
 	public:
@@ -218,37 +219,45 @@ namespace ag
 		Eigen::Matrix<uint32_t, Eigen::Dynamic, Eigen::Dynamic> path; // (MAX_CODELENGTH, V)
 
 		void _buildModel();
-		void updateZ(size_t x, size_t y, Eigen::VectorXf& z, float* f) const;
-		float inplaceUpdate(size_t x, size_t y, const Eigen::VectorXf& z, const float* f, float lr);
+		void updateZ(ThreadLocalData& ld, word_id_t x, word_id_t y, Eigen::VectorXf& z, float* f) const;
+		float inplaceUpdate(ThreadLocalData& ld, word_id_t x, word_id_t y, const Eigen::VectorXf& z, const float* f, float lr);
 
 		void initSharedForMulti(ThreadLocalData& ld, size_t window_length) const;
-		void allocateCache(ThreadLocalData& ld, size_t y, size_t num_workers) const;
-		float update(size_t x, size_t y, const Eigen::VectorXf& z, const float* f, float lr, ThreadLocalData& data) const;
+		void allocateCache(ThreadLocalData& ld, word_id_t y, size_t num_workers) const;
+		float update(ThreadLocalData& ld, word_id_t x, word_id_t y, const Eigen::VectorXf& z, const float* f, float lr) const;
 		size_t getFWidth() const;
 	public:
-		using AdaGramBase<AdaGramModel<Mode::hierarchical_softmax>, ThreadLocalBase>::AdaGramBase;
+		using BaseClass::BaseClass;
+	};
+
+	struct ThreadLocalNS : public ThreadLocalBase
+	{
+		std::vector<uint32_t> negative_samples;
+		size_t consumed = 0;
 	};
 
 	template<>
 	class AdaGramModel<Mode::negative_sampling>
-		: public AdaGramBase<AdaGramModel<Mode::negative_sampling>, ThreadLocalBase>
+		: public AdaGramBase<AdaGramModel<Mode::negative_sampling>, ThreadLocalNS>
 	{
-		using BaseClass = AdaGramBase<AdaGramModel<Mode::negative_sampling>, ThreadLocalBase>;
-		using ThreadLocalData = ThreadLocalBase;
+		using BaseClass = AdaGramBase<AdaGramModel<Mode::negative_sampling>, ThreadLocalNS>;
+		using ThreadLocalData = ThreadLocalNS;
 		friend BaseClass;
 
-		std::discrete_distribution<uint32_t> unigramTable;
-		size_t negativeSampleSize = 0;
+		mutable std::discrete_distribution<word_id_t> unigram_table;
+		size_t negative_sample_size = 0;
 
 		void _buildModel();
-		void updateZ(size_t x, size_t y, Eigen::VectorXf& z, float* f, bool negative = false) const;
-		float inplaceUpdate(size_t x, size_t y, const Eigen::VectorXf& z, const float* f, float lr, bool negative = false);
+		void updateZ(ThreadLocalData& ld, word_id_t x, word_id_t y, Eigen::VectorXf& z, float* f) const;
+		float inplaceUpdate(ThreadLocalData& ld, word_id_t x, word_id_t y, const Eigen::VectorXf& z, const float* f, float lr);
+		float inplaceUpdateSingle(ThreadLocalData& ld, word_id_t x, word_id_t y, const Eigen::VectorXf& z, const float* f, float lr, bool negative);
 
 		void initSharedForMulti(ThreadLocalData& ld, size_t window_length) const;
-		void allocateCache(ThreadLocalData& ld, size_t y, size_t num_workers) const;
-		float update(size_t x, size_t y, const Eigen::VectorXf& z, const float* f, float lr, ThreadLocalData& data, bool negative = false) const;
+		void allocateCache(ThreadLocalData& ld, word_id_t y, size_t num_workers) const;
+		float update(ThreadLocalData& ld, word_id_t x, word_id_t y, const Eigen::VectorXf& z, const float* f, float lr) const;
+		float updateSingle(ThreadLocalData& ld, word_id_t x, word_id_t y, const Eigen::VectorXf& z, const float* f, float lr, bool negative) const;
 		size_t getFWidth() const;
 	public:
-		using AdaGramBase<AdaGramModel<Mode::negative_sampling>, ThreadLocalBase>::AdaGramBase;
+		using BaseClass::BaseClass;
 	};
 }

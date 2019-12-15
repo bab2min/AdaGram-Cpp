@@ -109,7 +109,6 @@ namespace ag
 
 	struct ThreadLocalBase
 	{
-		std::mt19937_64 rg;
 		Eigen::MatrixXf update_in, update_out;
 		std::unordered_map<word_id_t, word_id_t> update_out_idx;
 		std::unordered_set<word_id_t> update_out_idx_hash;
@@ -143,6 +142,7 @@ namespace ag
 		bool context_cut = true;
 
 		_ThreadLocalData globalData;
+		std::mt19937_64 rg;
 		WordDictionary<> vocabs;
 
 		void updateCounts(size_t x, const Eigen::VectorXf& localCounts, float lr);
@@ -151,15 +151,14 @@ namespace ag
 		void buildModel();
 		template<bool _multi>
 		Report trainVectors(const word_id_t* ws, size_t len, size_t window_length, float start_lr, float end_lr, 
-			_ThreadLocalData& ld, size_t num_workers, std::mutex* mtx_in, std::mutex* mtx_out);
+			_ThreadLocalData& ld, size_t num_workers, std::mt19937_64& rg, std::mutex* mtx_in, std::mutex* mtx_out);
 		void updateNormalizedVector();
 	public:
 
 		AdaGramBase(size_t _M = 100, size_t _T = 5, float _alpha = 1e-1, float _d = 0,
 			float _subsampling = 1e-4, size_t seed = std::random_device()())
-			: M(_M), T(_T), alpha(_alpha), d(_d), subsampling(_subsampling)
+			: M(_M), T(_T), alpha(_alpha), d(_d), subsampling(_subsampling), rg{seed}
 		{
-			globalData.rg = std::mt19937_64{ seed };
 		}
 
 		void buildVocab(const std::function<DataReader()>& reader, size_t min_cnt = 10);
@@ -170,7 +169,7 @@ namespace ag
 
 		void buildTrain(const std::function<DataReader()>& reader, size_t min_cnt = 10,
 			size_t num_workers = 0, size_t window_length = 4, float start_lr = 0.025, float end_lr = 0.00025, 
-			size_t batch_sents = 1000, size_t epochs = 1);
+			size_t batch_sents = 1000, size_t epochs = 1, size_t report = 100000);
 
 		std::pair<Eigen::VectorXf, size_t> getExpectedPi(const std::string& word) const;
 
@@ -219,10 +218,11 @@ namespace ag
 		Eigen::Matrix<uint32_t, Eigen::Dynamic, Eigen::Dynamic> path; // (MAX_CODELENGTH, V)
 
 		void _buildModel();
-		void updateZ(ThreadLocalData& ld, word_id_t x, word_id_t y, Eigen::VectorXf& z, float* f) const;
+		template<bool _multi>
+		void updateZ(ThreadLocalData& ld, std::mt19937_64& rg, size_t num_workers, word_id_t x, word_id_t y, Eigen::VectorXf& z, float* f) const;
 		float inplaceUpdate(ThreadLocalData& ld, word_id_t x, word_id_t y, const Eigen::VectorXf& z, const float* f, float lr);
 
-		void initSharedForMulti(ThreadLocalData& ld, size_t window_length) const;
+		ThreadLocalData createLocalData(size_t window_length) const;
 		void allocateCache(ThreadLocalData& ld, word_id_t y, size_t num_workers) const;
 		float update(ThreadLocalData& ld, word_id_t x, word_id_t y, const Eigen::VectorXf& z, const float* f, float lr) const;
 		size_t getFWidth() const;
@@ -233,7 +233,7 @@ namespace ag
 	struct ThreadLocalNS : public ThreadLocalBase
 	{
 		std::vector<uint32_t> negative_samples;
-		size_t consumed = 0;
+		size_t consumed = 0, produced = 0;
 	};
 
 	template<>
@@ -245,14 +245,15 @@ namespace ag
 		friend BaseClass;
 
 		mutable std::discrete_distribution<word_id_t> unigram_table;
-		size_t negative_sample_size = 0;
+		size_t negative_sample_size = 10;
 
 		void _buildModel();
-		void updateZ(ThreadLocalData& ld, word_id_t x, word_id_t y, Eigen::VectorXf& z, float* f) const;
+		template<bool _multi>
+		void updateZ(ThreadLocalData& ld, std::mt19937_64& rg, size_t num_workers, word_id_t x, word_id_t y, Eigen::VectorXf& z, float* f) const;
 		float inplaceUpdate(ThreadLocalData& ld, word_id_t x, word_id_t y, const Eigen::VectorXf& z, const float* f, float lr);
 		float inplaceUpdateSingle(ThreadLocalData& ld, word_id_t x, word_id_t y, const Eigen::VectorXf& z, const float* f, float lr, bool negative);
 
-		void initSharedForMulti(ThreadLocalData& ld, size_t window_length) const;
+		ThreadLocalData createLocalData(size_t window_length) const;
 		void allocateCache(ThreadLocalData& ld, word_id_t y, size_t num_workers) const;
 		float update(ThreadLocalData& ld, word_id_t x, word_id_t y, const Eigen::VectorXf& z, const float* f, float lr) const;
 		float updateSingle(ThreadLocalData& ld, word_id_t x, word_id_t y, const Eigen::VectorXf& z, const float* f, float lr, bool negative) const;
